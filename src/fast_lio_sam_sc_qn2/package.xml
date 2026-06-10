@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>fast_lio_sam_sc_qn2</name>
+  <version>0.1.0</version>
+
+  <description>
+    ROS 2 port of the FAST-LIO-SAM-SC-QN back-end for MID360-only mapping.
+  </description>
+
+  <maintainer email="chu@example.com">chu</maintainer>
+  <license>CC-BY-NC-SA-4.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>message_filters</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>eigen</depend>
+
+  <exec_depend>libomp-dev</exec_depend>
+  <exec_depend>tbb</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
