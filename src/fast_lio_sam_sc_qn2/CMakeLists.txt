@@ -29,6 +29,7 @@ find_package(tf2_ros REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
+find_package(rosbag2_storage REQUIRED)
 
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io filters kdtree features registration)
@@ -71,6 +72,7 @@ set(ROS2_DEPS
   pcl_ros
   pcl_conversions
   rosbag2_cpp
+  rosbag2_storage
 )
 
 # Keep the vendored algorithm build order aligned with the upstream ROS 1

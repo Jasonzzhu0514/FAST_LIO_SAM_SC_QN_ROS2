@@ -7,7 +7,7 @@
       vis_hz: 1.0
 
     input:
-      # sunray_slam/fast_lio publishes these topics for MID360 mapping.
+      # FAST-LIO publishes these topics for MID360 mapping.
       odom_topic: "Odometry_loc"
       cloud_topic: "cloud_registered_1"
       cloud_is_in_world_frame: true
@@ -27,6 +27,7 @@
       debug_coarse_aligned_topic: "coarse_aligned_quatro"
       debug_fine_aligned_topic: "fine_aligned_nano_gicp"
       save_trigger_topic: "save_dir"
+      publish_corrected_map_continuously: true
       transient_qos_depth: 10
       realtime_qos_depth: 10
       save_trigger_qos_depth: 1

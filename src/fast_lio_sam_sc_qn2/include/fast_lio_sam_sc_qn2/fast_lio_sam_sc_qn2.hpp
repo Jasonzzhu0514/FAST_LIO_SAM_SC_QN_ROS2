@@ -90,6 +90,7 @@ private:
     std::string raw_map_filename_;
     std::string bag_directory_name_;
     bool input_cloud_is_world_frame_ = true;
+    bool publish_corrected_map_continuously_ = true;
     int input_sync_queue_size_ = 20;
     int transient_qos_depth_ = 10;
     int realtime_qos_depth_ = 10;

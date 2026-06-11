@@ -3,15 +3,37 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
+#include <rclcpp/serialization.hpp>
+#include <rclcpp/serialized_message.hpp>
+#include <rmw/rmw.h>
+#include <rosbag2_cpp/converter_options.hpp>
 #include <rosbag2_cpp/writer.hpp>
+#include <rosbag2_cpp/writers/sequential_writer.hpp>
+#include <rosbag2_storage/serialized_bag_message.hpp>
+#include <rosbag2_storage/topic_metadata.hpp>
+#include <rosidl_runtime_cpp/traits.hpp>
+
+#if __has_include(<rosbag2_storage/storage_options.hpp>)
+#include <rosbag2_storage/storage_options.hpp>
+#else
+#include <rosbag2_cpp/storage_options.hpp>
+#endif
 
 using namespace std::chrono_literals;
 
 namespace
 {
+#if __has_include(<rosbag2_storage/storage_options.hpp>)
+using RosbagStorageOptions = rosbag2_storage::StorageOptions;
+#else
+using RosbagStorageOptions = rosbag2_cpp::StorageOptions;
+#endif
+
 std::string requireStringParameter(const rclcpp::Node &node, const std::string &name, const bool allow_empty = false)
 {
     const auto value = node.get_parameter(name).as_string();
@@ -32,6 +54,29 @@ std::string makeTimestamp(const std::string &format)
     std::ostringstream stream;
     stream << std::put_time(&local_time, format.c_str());
     return stream.str();
+}
+
+template<typename MessageT>
+std::shared_ptr<rosbag2_storage::SerializedBagMessage>
+makeSerializedBagMessage(const MessageT &msg,
+                         const std::string &topic_name,
+                         const rcutils_time_point_value_t timestamp)
+{
+    rclcpp::SerializedMessage serialized_msg;
+    rclcpp::Serialization<MessageT> serializer;
+    serializer.serialize_message(&msg, &serialized_msg);
+
+    auto bag_msg = std::make_shared<rosbag2_storage::SerializedBagMessage>();
+    bag_msg->serialized_data = std::shared_ptr<rcutils_uint8_array_t>(
+        new rcutils_uint8_array_t(serialized_msg.release_rcl_serialized_message()),
+        [](rcutils_uint8_array_t *msg) {
+            const rcutils_ret_t ret = rcutils_uint8_array_fini(msg);
+            (void)ret;
+            delete msg;
+        });
+    bag_msg->time_stamp = timestamp;
+    bag_msg->topic_name = topic_name;
+    return bag_msg;
 }
 }  // namespace
 
@@ -80,6 +125,7 @@ void FastLioSamScQn2::declareParameters()
     declare_parameter<std::string>("output.debug_coarse_aligned_topic", "");
     declare_parameter<std::string>("output.debug_fine_aligned_topic", "");
     declare_parameter<std::string>("output.save_trigger_topic", "");
+    declare_parameter<bool>("output.publish_corrected_map_continuously", true);
     declare_parameter<int>("output.transient_qos_depth", 10);
     declare_parameter<int>("output.realtime_qos_depth", 10);
     declare_parameter<int>("output.save_trigger_qos_depth", 1);
@@ -155,6 +201,7 @@ void FastLioSamScQn2::loadParameters()
     debug_coarse_aligned_topic_ = requireStringParameter(*this, "output.debug_coarse_aligned_topic");
     debug_fine_aligned_topic_ = requireStringParameter(*this, "output.debug_fine_aligned_topic");
     save_trigger_topic_ = requireStringParameter(*this, "output.save_trigger_topic");
+    publish_corrected_map_continuously_ = get_parameter("output.publish_corrected_map_continuously").as_bool();
     transient_qos_depth_ = get_parameter("output.transient_qos_depth").as_int();
     realtime_qos_depth_ = get_parameter("output.realtime_qos_depth").as_int();
     save_trigger_qos_depth_ = get_parameter("output.save_trigger_qos_depth").as_int();
@@ -498,7 +545,8 @@ void FastLioSamScQn2::visTimerFunc()
         corrected_path_pub_->publish(corrected_path_);
     }
 
-    if (global_map_vis_switch_ && corrected_pcd_map_pub_->get_subscription_count() > 0)
+    const bool has_map_subscribers = corrected_pcd_map_pub_->get_subscription_count() > 0;
+    if (has_map_subscribers && (publish_corrected_map_continuously_ || global_map_vis_switch_))
     {
         pcl::PointCloud<PointType>::Ptr corrected_map(new pcl::PointCloud<PointType>());
         {
@@ -518,7 +566,7 @@ void FastLioSamScQn2::visTimerFunc()
         corrected_pcd_map_pub_->publish(map_msg);
         global_map_vis_switch_ = false;
     }
-    if (!global_map_vis_switch_ && corrected_pcd_map_pub_->get_subscription_count() == 0)
+    if (!has_map_subscribers)
     {
         global_map_vis_switch_ = true;
     }
@@ -602,23 +650,41 @@ void FastLioSamScQn2::saveResults(const std::string &save_dir, const bool from_d
     if (save_map_bag_)
     {
         const fs::path bag_directory = session_directory / bag_directory_name_;
-        rosbag2_cpp::Writer writer;
-        writer.open(bag_directory.string());
+        const std::string serialization_format = rmw_get_serialization_format();
+        RosbagStorageOptions storage_options;
+        storage_options.uri = bag_directory.string();
+        storage_options.storage_id = "sqlite3";
+
+        rosbag2_cpp::ConverterOptions converter_options;
+        converter_options.input_serialization_format = serialization_format;
+        converter_options.output_serialization_format = serialization_format;
+
+        rosbag2_cpp::Writer writer(std::make_unique<rosbag2_cpp::writers::SequentialWriter>());
+        writer.open(storage_options, converter_options);
+        writer.create_topic(rosbag2_storage::TopicMetadata{
+            "/keyframe_pcd",
+            rosidl_generator_traits::name<sensor_msgs::msg::PointCloud2>(),
+            serialization_format,
+            ""});
+        writer.create_topic(rosbag2_storage::TopicMetadata{
+            "/keyframe_pose",
+            rosidl_generator_traits::name<geometry_msgs::msg::PoseStamped>(),
+            serialization_format,
+            ""});
+
         for (const auto &keyframe : keyframes_snapshot)
         {
             auto pcd_msg = pclToPclRos(keyframe.pcd_, map_frame_);
             auto pose_msg = poseEigToPoseStamped(keyframe.pose_corrected_eig_, map_frame_);
-            const auto timestamp_ns = static_cast<int64_t>(keyframe.timestamp_ * 1e9);
-            const auto timestamp = rclcpp::Time(timestamp_ns);
+            const auto timestamp_ns = static_cast<rcutils_time_point_value_t>(keyframe.timestamp_ * 1e9);
             builtin_interfaces::msg::Time stamp_msg;
             stamp_msg.sec = static_cast<int32_t>(timestamp_ns / 1000000000LL);
             stamp_msg.nanosec = static_cast<uint32_t>(timestamp_ns % 1000000000LL);
             pcd_msg.header.stamp = stamp_msg;
             pose_msg.header.stamp = stamp_msg;
-            writer.write(pcd_msg, "/keyframe_pcd", timestamp);
-            writer.write(pose_msg, "/keyframe_pose", timestamp);
+            writer.write(makeSerializedBagMessage(pcd_msg, "/keyframe_pcd", timestamp_ns));
+            writer.write(makeSerializedBagMessage(pose_msg, "/keyframe_pose", timestamp_ns));
         }
-        writer.close();
     }
 
     if (save_map_pcd_)

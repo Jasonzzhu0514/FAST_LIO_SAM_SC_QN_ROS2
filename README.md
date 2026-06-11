@@ -1,278 +1,247 @@
-# fast_lio_sam_sc_qn2 ROS 2 Workspace
+# fast_lio_sam_sc_qn2 ROS 2 工作空间
 
-ROS 2 port of the FAST-LIO-SAM-SC-QN mapping back-end. This workspace is
-currently scoped for Livox MID360/MID360s and is intended to run behind a ROS 2
-FAST-LIO front-end such as the one in `sunray_slam`.
+FAST-LIO-SAM-SC-QN 后端的 ROS 2 移植版本，主要用于 Livox MID360/MID360s。它不负责前端里程计计算，只订阅 FAST-LIO 前端输出的里程计和配准点云，完成关键帧、回环检测、配准、GTSAM 位姿图优化、地图发布和结果保存。
 
-## What This Package Does
+默认输入配置位于 `src/fast_lio_sam_sc_qn2/config/mid360.yaml`：
 
-- Subscribes to FAST-LIO odometry and registered point cloud output.
-- Adds keyframes, Scan Context loop candidate detection, Quatro coarse
-  registration, Nano-GICP fine registration, and GTSAM pose graph optimization.
-- Publishes corrected odometry/path/map/debug clouds.
-- Saves optimized keyframes, poses, and a corrected PCD map.
+- 里程计：`Odometry_loc`
+- 配准点云：`cloud_registered_1`
+- 地图坐标系：`camera_init`
+- 机体坐标系：`body`
 
-Default MID360 profile:
-
-- Odometry topic: `Odometry_loc`
-- Registered cloud topic: `cloud_registered_1`
-- Map frame: `camera_init`
-- Robot frame: `body`
-
-These are defaults in `src/fast_lio_sam_sc_qn2/config/mid360.yaml`; change that
-file or pass another config file if your FAST-LIO front-end uses different names.
-
-## Workspace Layout
-
-```text
-fast_lio_sam_sc_qn_ros2/
-  build.sh
-  src/
-    fast_lio_sam_sc_qn2/
-    livox_ros_driver2/
-    fast_lio/                  # optional; usually provided by sunray_slam
-```
-
-`livox_ros_driver2` is optional for the back-end itself. Keep it in this
-workspace if you want this workspace to build/start the official MID360 driver;
-remove it or add `COLCON_IGNORE` if your robot stack already starts the Livox
-driver from another workspace such as `sunray_slam`.
-
-The local driver is a git submodule fetched from:
-
-```text
-https://github.com/Livox-SDK/livox_ros_driver2
-```
-
-The upstream driver keeps `package_ROS2.xml` instead of a tracked `package.xml`,
-so this workspace generates `src/livox_ros_driver2/package.xml` from
-`package_ROS2.xml` before building.
-
-After cloning this workspace, initialize submodules if needed:
+## 编译
 
 ```bash
-cd fast_lio_sam_sc_qn_ros2
-git submodule update --init --recursive
-```
-
-## Dependencies
-
-Source your ROS 2 environment first:
-
-```bash
-source /opt/ros/<distro>/setup.bash
-echo $ROS_VERSION
-```
-
-`ROS_VERSION` must be `2`. Do not build this workspace from a ROS 1 environment
-such as `noetic`.
-
-Install ROS/package dependencies where available:
-
-```bash
-cd fast_lio_sam_sc_qn_ros2
-rosdep update
-rosdep install --from-paths src --ignore-src -r -y
-```
-
-You still need the non-ROS libraries required by the mapping back-end:
-
-- GTSAM
-- TEASER++
-- PCL
-- OpenMP
-- TBB
-
-If you keep `src/livox_ros_driver2` in this workspace, also install Livox SDK 2.
-If the Livox driver is supplied by `sunray_slam` or another workspace, the
-back-end package itself does not need Livox SDK 2.
-
-If `rosdep` cannot resolve GTSAM or TEASER++ for your distro, install those
-libraries manually before building.
-
-## Build
-
-Build this workspace after all system dependencies are installed:
-
-```bash
-cd fast_lio_sam_sc_qn_ros2
+cd ~/Documents/fast_lio_sam_sc_qn_ros2
 source /opt/ros/<distro>/setup.bash
 ./build.sh
 source install/setup.bash
 ```
 
-`build.sh` runs:
+常见 ROS 依赖：
 
 ```bash
-colcon build --symlink-install --cmake-args -DROS_EDITION=ROS2 -DDISTRO_ROS=${ROS_DISTRO}
+sudo apt install ros-<distro>-pcl-ros ros-<distro>-pcl-conversions ros-<distro>-rosbag2-cpp
 ```
 
-The script refuses to run unless `ROS_VERSION=2` is present in the environment.
-It also prepares `livox_ros_driver2/package.xml` for colcon package discovery.
-`ROS_EDITION=ROS2` and `DISTRO_ROS=${ROS_DISTRO}` are needed because
-`livox_ros_driver2` keeps ROS 1 and ROS 2 build logic in one `CMakeLists.txt`.
-They are harmless if only `fast_lio_sam_sc_qn2` is built.
+后端还需要 GTSAM、TEASER++、PCL、OpenMP、TBB。若编译本仓库内的 `livox_ros_driver2`，还需要 Livox SDK 2。
 
-The original ROS 1 project builds `nano_gicp` first, then `quatro`, then the
-main FAST-LIO-SAM-SC-QN package. This ROS 2 port keeps that order inside this
-package CMake:
+不要混用 ROS 1 和 ROS 2 环境。编译前确认：
+
+```bash
+echo $ROS_VERSION
+echo $ROS_DISTRO
+```
+
+`ROS_VERSION` 应为 `2`。
+
+## 雷达配置
+
+MID360s 配置文件：
 
 ```text
-nano_gicp_vendor -> quatro_vendor -> scancontext_vendor -> fast_lio_sam_sc_qn2_core
+src/livox_ros_driver2/config/MID360s_config.json
 ```
 
-They are source vendors under `third_party/`; do not build them as separate
-colcon packages.
+配置示例：
 
-## Start Mapping
+- 主机网卡 IP：`192.168.1.5`
+- 雷达 IP：`192.168.1.122`
 
-You need two data sources:
+如果你的电脑或雷达 IP 不同，需要改 `host_ip` 和 `lidar_configs[].ip`。可用下面命令确认本机网卡：
 
-- Livox driver publishing MID360 data.
-- FAST-LIO front-end publishing odometry and registered cloud topics.
+```bash
+ip -4 addr
+ip route get <雷达IP>
+```
 
-This package is the loop-closure/pose-graph mapping back-end. It does not run
-the FAST-LIO front-end by itself.
+如果日志出现：
 
-Before starting the back-end, check that FAST-LIO is publishing the configured
-input topics:
+```text
+found lidar not defined in the user-defined config
+```
+
+通常是 `lidar_configs[].ip` 没写成实际雷达 IP。
+
+## 单独启动雷达
+
+先只启动 Livox 驱动，确认雷达正常：
+
+```bash
+cd ~/Documents/fast_lio_sam_sc_qn_ros2
+source install/setup.bash
+ros2 launch livox_ros_driver2 msg_MID360s_launch.py
+```
+
+如果是 MID360：
+
+```bash
+ros2 launch livox_ros_driver2 msg_MID360_launch.py
+```
+
+正常日志应包含类似内容：
+
+```text
+successfully change work mode
+successfully enable Livox Lidar imu
+```
+
+## 测试雷达是否正常
+
+驱动默认使用 `multi_topic=0`，点云和 IMU 话题通常是：
+
+- `/livox/lidar`
+- `/livox/imu`
+
+检查话题是否存在：
+
+```bash
+ros2 topic list | grep livox
+```
+
+检查点云是否持续发布：
+
+```bash
+ros2 topic hz /livox/lidar
+```
+
+检查 IMU 是否持续发布：
+
+```bash
+ros2 topic hz /livox/imu
+```
+
+查看消息类型：
+
+```bash
+ros2 topic info /livox/lidar
+ros2 topic info /livox/imu
+```
+
+如果要 `echo` Livox 自定义消息，当前终端也必须加载本工作空间：
+
+```bash
+cd ~/Documents/fast_lio_sam_sc_qn_ros2
+source /opt/ros/<distro>/setup.bash
+source install/setup.bash
+ros2 topic echo /livox/lidar
+```
+
+当前 `msg_MID360s_launch.py` 默认 `xfer_format=1`，所以 `/livox/lidar` 类型通常是：
+
+```text
+livox_ros_driver2/msg/CustomMsg
+```
+
+如果需要 RViz 直接查看 `sensor_msgs/msg/PointCloud2`，把 `src/livox_ros_driver2/launch_ROS2/msg_MID360s_launch.py` 里的：
+
+```python
+xfer_format = 1
+```
+
+改为：
+
+```python
+xfer_format = 0
+```
+
+然后重新启动雷达驱动。
+
+## 启动建图
+
+建图后端需要 FAST-LIO 前端已经发布：
+
+- `Odometry_loc`
+- `cloud_registered_1`
+
+启动前检查：
 
 ```bash
 ros2 topic list | grep -E 'Odometry_loc|cloud_registered_1'
 ```
 
-### Option 1: Run Back-End Only
-
-Use this when `livox_ros_driver2` and FAST-LIO are already running, for example
-from `sunray_slam`:
+### 方式一：雷达和前端已启动，只启动后端
 
 ```bash
-cd fast_lio_sam_sc_qn_ros2
+cd ~/Documents/fast_lio_sam_sc_qn_ros2
 source install/setup.bash
 ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py
 ```
 
-In this mode the launch file does not require `livox_ros_driver2` to be
-installed.
+这是推荐流程：先单独确认雷达正常，再启动 FAST-LIO 前端，最后启动本后端。
 
-### Option 2: Also Start Livox MID360 Driver
+### 方式二：由本 launch 同时启动 Livox 驱动和后端
 
-This starts the official MID360 driver launch from `livox_ros_driver2`, but you
-still need a FAST-LIO front-end running to produce `Odometry_loc` and
-`cloud_registered_1`.
-
-```bash
-cd fast_lio_sam_sc_qn_ros2
-source install/setup.bash
-ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_livox_driver:=true
-```
-
-For MID360s:
+MID360s：
 
 ```bash
 ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_livox_driver:=true use_mid360s:=true
 ```
 
-If this command reports that `livox_ros_driver2` cannot be found, source the
-workspace that contains the driver or keep/build the local `src/livox_ros_driver2`
-copy.
+MID360：
 
-### Use A Custom Config
+```bash
+ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_livox_driver:=true
+```
 
-Copy and edit the default config if your FAST-LIO topic names, frame names, save
-directory, or loop parameters differ:
+默认情况下，这个 launch 只会额外启动 Livox 驱动，不会启动 FAST-LIO 前端。
+
+如果本工作空间内已经有 `fast_lio` 包，也可以显式让同一个 launch 拉起前端：
+
+```bash
+ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_fast_lio_frontend:=true
+```
+
+## 自定义配置
+
+复制默认配置后修改话题、坐标系、保存路径或回环参数：
 
 ```bash
 cp src/fast_lio_sam_sc_qn2/config/mid360.yaml ~/mid360_my_robot.yaml
-ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py config_file:=~/mid360_my_robot.yaml
+ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py backend_config_file:=~/mid360_my_robot.yaml
 ```
 
-Useful fields:
+常改参数：
 
 - `input.odom_topic`
 - `input.cloud_topic`
-- `input.cloud_is_in_world_frame`
 - `basic.map_frame`
 - `basic.robot_frame`
+- `result.save_directory`
 - `result.save_map_pcd`
 - `result.save_map_bag`
-- `result.save_in_kitti_format`
-- `result.save_directory`
-- `result.maps_directory_name`
-- `result.seq_name`
-- `result.session_name`
-- `result.session_timestamp_format`
 
-## Save Mapping Results
+## 保存结果
 
-Results are saved automatically on shutdown if keyframes exist. You can also
-trigger a save while the node is running:
+节点退出时会自动保存已有关键帧。运行中也可以手动保存：
 
 ```bash
 ros2 topic pub --once save_dir std_msgs/msg/String "{data: '/tmp/fast_lio_sam_sc_qn2'}"
 ```
 
-If the message data is empty, the node uses `result.save_directory`. If
-`result.save_directory` is empty, it uses the current working directory of the
-node process. Results are written under `result.maps_directory_name`, which
-defaults to `maps`. If you launch the node in a ROS namespace, publish to the
-namespaced `save_dir` topic. Without a namespace, `save_dir` resolves to
-`/save_dir`.
-
-Each node run uses one timestamped mapping session directory. Manual save and
-shutdown save write to the same session. With default settings and a launch from
-the workspace root, the layout is:
-
+默认输出目录结构：
 
 ```text
-fast_lio_sam_sc_qn_ros2/
-  maps/
-    sequence_YYYYmmdd_HHMMSS/
-      map_optimized.pcd
-      map_raw.pcd
-      poses_kitti.txt
-      poses_matrix.txt
-      poses_tum.txt
-      result_bag/
-        metadata.yaml
-        *.db3
-      scans/
-        000000.pcd
-        000001.pcd
-        ...
+maps/
+  sequence_YYYYmmdd_HHMMSS/
+    map_optimized.pcd
+    map_raw.pcd
+    poses_kitti.txt
+    poses_matrix.txt
+    poses_tum.txt
+    result_bag/
+      metadata.yaml
+      *.db3
+    scans/
+      000000.pcd
+      000001.pcd
 ```
 
-If you publish a save root explicitly, for example `/tmp/fast_lio_sam_sc_qn2`,
-the same session directory is created under:
+`result.session_name` 可以指定固定 session 目录名。
 
-```text
-/tmp/fast_lio_sam_sc_qn2/maps/sequence_YYYYmmdd_HHMMSS/
-```
+## 输出话题
 
-Session directory contents:
-
-```text
-map_optimized.pcd   # keyframes accumulated with optimized poses
-map_raw.pcd         # keyframes accumulated with original FAST-LIO poses
-poses_kitti.txt
-poses_matrix.txt
-poses_tum.txt
-result_bag/
-  metadata.yaml
-  *.db3
-scans/
-  000000.pcd
-  000001.pcd
-  ...
-```
-
-Set `result.session_name` if you want a fixed session folder name instead of the
-automatic timestamp suffix generated when the node starts. `result_bag/` is the
-ROS 2 rosbag2 equivalent of the original `result.bag`.
-
-## Main Published Topics
-
-Default output topics are relative names from `mid360.yaml`:
+默认输出话题：
 
 - `corrected_odom`
 - `corrected_path`
@@ -287,16 +256,24 @@ Default output topics are relative names from `mid360.yaml`:
 - `coarse_aligned_quatro`
 - `fine_aligned_nano_gicp`
 
-Because they are relative topic names, ROS namespaces can be applied normally.
+## 常见问题
 
-## Third-Party Source Vendors
+缺少 `pcl_ros`：
 
-`src/fast_lio_sam_sc_qn2/third_party` is intentionally a source-vendor directory,
-not a set of independent ROS packages:
+```bash
+sudo apt install ros-<distro>-pcl-ros
+```
 
-- `nano_gicp`
-- `quatro`
-- `scancontext_tro`
+`livox_ros_driver2` 编译时出现下面 warning 通常不影响使用：
 
-The package-level CMake builds them as vendor libraries. See
-`src/fast_lio_sam_sc_qn2/third_party/README.md` for notes about local changes.
+```text
+io features related to pcap/png/libusb will be disabled
+```
+
+如需消除：
+
+```bash
+sudo apt install libpcap-dev libpng-dev libusb-1.0-0-dev
+```
+
+第三方源码在 `src/fast_lio_sam_sc_qn2/third_party/`，由本包 CMake 统一构建，不需要单独作为 colcon 包编译。
