@@ -1,6 +1,6 @@
 # fast_lio_sam_sc_qn2 ROS 2 工作空间
 
-FAST-LIO-SAM-SC-QN 后端的 ROS 2 移植版本，主要用于 Livox MID360/MID360s。它不负责前端里程计计算，只订阅 FAST-LIO 前端输出的里程计和配准点云，完成关键帧、回环检测、配准、GTSAM 位姿图优化、地图发布和结果保存。
+FAST-LIO-SAM-SC-QN 的 ROS 2 工作空间，主要用于 Livox MID360/MID360s。工作空间内包含 ROS 2 版 FAST-LIO 前端和 `fast_lio_sam_sc_qn2` 后端：前端输出里程计和配准点云，后端完成关键帧、回环检测、配准、GTSAM 位姿图优化、地图发布和结果保存。
 
 默认输入配置位于 `src/fast_lio_sam_sc_qn2/config/mid360.yaml`：
 
@@ -149,48 +149,42 @@ xfer_format = 0
 
 ## 启动建图
 
-建图后端需要 FAST-LIO 前端已经发布：
-
-- `Odometry_loc`
-- `cloud_registered_1`
-
-启动前检查：
-
-```bash
-ros2 topic list | grep -E 'Odometry_loc|cloud_registered_1'
-```
-
-### 方式一：雷达和前端已启动，只启动后端
+推荐一条命令拉起 Livox 驱动、FAST-LIO 前端和后端。
 
 ```bash
 cd ~/Documents/fast_lio_sam_sc_qn_ros2
+source /opt/ros/<distro>/setup.bash
 source install/setup.bash
-ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py
+ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_livox_driver:=true use_mid360s:=true start_fast_lio_frontend:=true
 ```
 
-这是推荐流程：先单独确认雷达正常，再启动 FAST-LIO 前端，最后启动本后端。
-
-### 方式二：由本 launch 同时启动 Livox 驱动和后端
-
-MID360s：
+如果是 MID360，不是 MID360s：
 
 ```bash
-ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_livox_driver:=true use_mid360s:=true
+ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_livox_driver:=true start_fast_lio_frontend:=true
 ```
 
-MID360：
-
-```bash
-ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_livox_driver:=true
-```
-
-默认情况下，这个 launch 只会额外启动 Livox 驱动，不会启动 FAST-LIO 前端。
-
-如果本工作空间内已经有 `fast_lio` 包，也可以显式让同一个 launch 拉起前端：
+如果 Livox 驱动已经单独启动，只拉起前端和后端：
 
 ```bash
 ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py start_fast_lio_frontend:=true
 ```
+
+如果 FAST-LIO 前端也已经启动，只拉起后端：
+
+```bash
+ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py
+```
+
+启动后检查链路：
+
+```bash
+ros2 topic hz /livox/lidar
+ros2 topic hz /livox/imu
+ros2 topic list | grep -E 'Odometry_loc|cloud_registered_1|corrected_current_pcd|pose_stamped'
+```
+
+`src/fast_lio_sam_sc_qn2/third_party/FAST_LIO` 是 ROS 2 版 FAST-LIO 前端源码，作为普通目录随工作空间编译，不作为 submodule。
 
 ## 自定义配置
 
@@ -276,4 +270,4 @@ io features related to pcap/png/libusb will be disabled
 sudo apt install libpcap-dev libpng-dev libusb-1.0-0-dev
 ```
 
-第三方源码在 `src/fast_lio_sam_sc_qn2/third_party/`，由本包 CMake 统一构建，不需要单独作为 colcon 包编译。
+第三方源码在 `src/fast_lio_sam_sc_qn2/third_party/`。其中 `nano_gicp`、`quatro`、`scancontext_tro` 由本包 CMake 构建；`FAST_LIO` 是独立 ROS 2 前端包，会由 `build.sh` 纳入 colcon 编译。

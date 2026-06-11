@@ -35,4 +35,10 @@ if [[ ":${CMAKE_PREFIX_PATH:-}:" == *":/opt/ros/noetic:"* && "${ROS_DISTRO}" != 
 fi
 
 src/fast_lio_sam_sc_qn2/scripts/prepare_livox_ros_driver2.sh
-colcon build --symlink-install "$@" --cmake-args -DROS_EDITION=ROS2 -DDISTRO_ROS="${ROS_DISTRO}"
+colcon build --symlink-install \
+  --base-paths \
+    src/livox_ros_driver2 \
+    src/fast_lio_sam_sc_qn2 \
+    src/fast_lio_sam_sc_qn2/third_party/FAST_LIO \
+  "$@" \
+  --cmake-args -DROS_EDITION=ROS2 -DDISTRO_ROS="${ROS_DISTRO}"
