@@ -124,6 +124,7 @@ private:
     bool save_map_pcd_ = true;
     bool save_map_bag_ = false;
     bool save_in_kitti_format_ = true;
+    bool results_saved_ = false;
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr corrected_odom_pub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr corrected_path_pub_;

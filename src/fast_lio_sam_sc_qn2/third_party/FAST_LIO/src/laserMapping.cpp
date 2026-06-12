@@ -39,6 +39,7 @@
 #include <fstream>
 #include <csignal>
 #include <chrono>
+#include <filesystem>
 #include <unistd.h>
 #include <so3_math.h>
 #include <rclcpp/rclcpp.hpp>
@@ -499,20 +500,34 @@ void map_incremental()
 
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI());
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
+std::mutex accumulated_map_mutex;
+
+PointCloudXYZI::Ptr current_frame_world_cloud()
+{
+    PointCloudXYZI::Ptr laserCloudFullRes(dense_pub_en ? feats_undistort : feats_down_body);
+    int size = laserCloudFullRes->points.size();
+    PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
+
+    for (int i = 0; i < size; i++)
+    {
+        RGBpointBodyToWorld(&laserCloudFullRes->points[i],
+                            &laserCloudWorld->points[i]);
+    }
+    return laserCloudWorld;
+}
+
+void append_accumulated_map_frame()
+{
+    const auto laserCloudWorld = current_frame_world_cloud();
+    std::lock_guard<std::mutex> lock(accumulated_map_mutex);
+    *pcl_wait_pub += *laserCloudWorld;
+}
+
 void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull)
 {
     if (scan_pub_en)
     {
-        PointCloudXYZI::Ptr laserCloudFullRes(dense_pub_en ? feats_undistort : feats_down_body);
-        int size = laserCloudFullRes->points.size();
-        PointCloudXYZI::Ptr laserCloudWorld(
-            new PointCloudXYZI(size, 1));
-
-        for (int i = 0; i < size; i++)
-        {
-            RGBpointBodyToWorld(&laserCloudFullRes->points[i],
-                                &laserCloudWorld->points[i]);
-        }
+        const auto laserCloudWorld = current_frame_world_cloud();
 
         sensor_msgs::msg::PointCloud2 laserCloudmsg;
         pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
@@ -592,20 +607,11 @@ void publish_effect_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Shar
 
 void publish_map(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap)
 {
-    PointCloudXYZI::Ptr laserCloudFullRes(dense_pub_en ? feats_undistort : feats_down_body);
-    int size = laserCloudFullRes->points.size();
-    PointCloudXYZI::Ptr laserCloudWorld(
-        new PointCloudXYZI(size, 1));
-
-    for (int i = 0; i < size; i++)
-    {
-        RGBpointBodyToWorld(&laserCloudFullRes->points[i],
-                            &laserCloudWorld->points[i]);
-    }
-    *pcl_wait_pub += *laserCloudWorld;
-
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
-    pcl::toROSMsg(*pcl_wait_pub, laserCloudmsg);
+    {
+        std::lock_guard<std::mutex> lock(accumulated_map_mutex);
+        pcl::toROSMsg(*pcl_wait_pub, laserCloudmsg);
+    }
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
     laserCloudmsg.header.frame_id = "camera_init";
     pubLaserCloudMap->publish(laserCloudmsg);
@@ -619,8 +625,17 @@ void publish_map(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub
 
 void save_to_pcd()
 {
-    pcl::PCDWriter pcd_writer;
-    pcd_writer.writeBinary(map_file_path, *pcl_wait_pub);
+    if (map_file_path.empty())
+    {
+        return;
+    }
+    const auto parent_path = std::filesystem::path(map_file_path).parent_path();
+    if (!parent_path.empty())
+    {
+        std::filesystem::create_directories(parent_path);
+    }
+    std::lock_guard<std::mutex> lock(accumulated_map_mutex);
+    pcl::io::savePCDFileASCII<PointType>(map_file_path, *pcl_wait_pub);
 }
 
 template <typename T>
@@ -1084,6 +1099,8 @@ private:
             /******* Publish points *******/
             if (path_en)
                 publish_path(pubPath_);
+            if (map_pub_en)
+                append_accumulated_map_frame();
             if (scan_pub_en)
                 publish_frame_world(pubLaserCloudFull_);
             if (scan_pub_en && scan_body_pub_en)
@@ -1135,7 +1152,7 @@ private:
         std_srvs::srv::Trigger::Response::SharedPtr res)
     {
         RCLCPP_INFO(this->get_logger(), "Saving map to %s...", map_file_path.c_str());
-        if (pcd_save_en)
+        if (pcd_save_en && !map_file_path.empty())
         {
             save_to_pcd();
             res->success = true;

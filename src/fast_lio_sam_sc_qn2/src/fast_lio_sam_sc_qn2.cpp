@@ -330,6 +330,9 @@ void FastLioSamScQn2::odomPcdCallback(const nav_msgs::msg::Odometry::ConstShared
     {
         keyframes_.push_back(current_frame_);
         updateOdomsAndPaths(current_frame_);
+        RCLCPP_INFO(get_logger(), "Added initial keyframe: idx=%d points=%zu",
+                    current_frame_.idx_,
+                    current_frame_.pcd_.size());
 
         const auto variance_vector =
             (gtsam::Vector(6) << 1e-4, 1e-4, 1e-4, 1e-2, 1e-2, 1e-2).finished();
@@ -355,9 +358,20 @@ void FastLioSamScQn2::odomPcdCallback(const nav_msgs::msg::Odometry::ConstShared
         return;
     }
 
+    const double keyframe_distance =
+        (latest_keyframe.pose_corrected_eig_.block<3, 1>(0, 3) -
+         current_frame_.pose_corrected_eig_.block<3, 1>(0, 3))
+            .norm();
     {
         std::lock_guard<std::mutex> lock(keyframes_mutex_);
         keyframes_.push_back(current_frame_);
+        RCLCPP_INFO(get_logger(),
+                    "Added keyframe: idx=%d distance=%.3f threshold=%.3f points=%zu total_keyframes=%zu",
+                    current_frame_.idx_,
+                    keyframe_distance,
+                    keyframe_thr_,
+                    current_frame_.pcd_.size(),
+                    keyframes_.size());
     }
 
     const auto variance_vector =
@@ -588,6 +602,11 @@ void FastLioSamScQn2::saveFlagCallback(const std_msgs::msg::String::SharedPtr ms
 void FastLioSamScQn2::saveResults(const std::string &save_dir, const bool from_destructor)
 {
     std::lock_guard<std::mutex> save_lock(save_mutex_);
+    if (from_destructor && results_saved_)
+    {
+        RCLCPP_INFO(get_logger(), "Mapping results already saved; skip shutdown save");
+        return;
+    }
 
     std::vector<PosePcd> keyframes_snapshot;
     {
@@ -602,14 +621,14 @@ void FastLioSamScQn2::saveResults(const std::string &save_dir, const bool from_d
 
     const fs::path session_directory = fs::path(save_dir) / maps_directory_name_ / resolved_session_name_;
     const fs::path scans_directory = session_directory / scans_directory_name_;
-    if (fs::exists(session_directory))
-    {
-        fs::remove_all(session_directory);
-    }
     fs::create_directories(session_directory);
 
     if (save_in_kitti_format_)
     {
+        if (fs::exists(scans_directory))
+        {
+            fs::remove_all(scans_directory);
+        }
         fs::create_directories(scans_directory);
 
         std::ofstream matrix_pose_file(session_directory / poses_matrix_filename_);
@@ -650,6 +669,10 @@ void FastLioSamScQn2::saveResults(const std::string &save_dir, const bool from_d
     if (save_map_bag_)
     {
         const fs::path bag_directory = session_directory / bag_directory_name_;
+        if (fs::exists(bag_directory))
+        {
+            fs::remove_all(bag_directory);
+        }
         const std::string serialization_format = rmw_get_serialization_format();
         RosbagStorageOptions storage_options;
         storage_options.uri = bag_directory.string();
@@ -701,12 +724,17 @@ void FastLioSamScQn2::saveResults(const std::string &save_dir, const bool from_d
         }
         const auto voxelized_corrected_map = voxelizePcd(corrected_map, voxel_res_);
         const auto voxelized_raw_map = voxelizePcd(raw_map, voxel_res_);
-        pcl::io::savePCDFileASCII<PointType>((session_directory / optimized_map_filename_).string(),
-                                             *voxelized_corrected_map);
-        pcl::io::savePCDFileASCII<PointType>((session_directory / raw_map_filename_).string(),
-                                             *voxelized_raw_map);
+        const fs::path session_map_path = session_directory / (resolved_session_name_ + "_map.pcd");
+        pcl::io::savePCDFileASCII<PointType>(session_map_path.string(), *voxelized_corrected_map);
+
+        RCLCPP_INFO(get_logger(),
+                    "Saved backend accumulated map: keyframes=%zu raw_points=%zu optimized_points=%zu",
+                    keyframes_snapshot.size(),
+                    corrected_map->size(),
+                    voxelized_corrected_map->size());
     }
 
+    results_saved_ = true;
     RCLCPP_INFO(get_logger(), "Saved mapping results to %s%s", session_directory.string().c_str(),
                 from_destructor ? " during shutdown" : "");
 }
@@ -775,8 +803,9 @@ visualization_msgs::msg::Marker FastLioSamScQn2::getLoopMarkers(const gtsam::Val
 
 bool FastLioSamScQn2::checkIfKeyframe(const PosePcd &pose_pcd_in, const PosePcd &latest_pose_pcd)
 {
-    return keyframe_thr_ <
-           (latest_pose_pcd.pose_corrected_eig_.block<3, 1>(0, 3) -
-            pose_pcd_in.pose_corrected_eig_.block<3, 1>(0, 3))
-               .norm();
+    const double translation_delta =
+        (latest_pose_pcd.pose_corrected_eig_.block<3, 1>(0, 3) -
+         pose_pcd_in.pose_corrected_eig_.block<3, 1>(0, 3))
+            .norm();
+    return keyframe_thr_ < translation_delta;
 }

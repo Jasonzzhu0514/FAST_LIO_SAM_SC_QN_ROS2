@@ -10,7 +10,6 @@ import re
 import signal
 import shlex
 import subprocess
-import struct
 import time
 from typing import Any
 
@@ -19,18 +18,11 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path as RosPath
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Imu, PointCloud2, PointField
+from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import String
 
-try:
-    from livox_ros_driver2.msg import CustomMsg as LivoxCustomMsg
-except Exception:  # noqa: BLE001
-    LivoxCustomMsg = None
 
-
-SAVED_MAP_MARKERS = (
-    "map_optimized.pcd",
-    "map_raw.pcd",
+SAVED_METADATA_MARKERS = (
     "poses_matrix.txt",
     "poses_kitti.txt",
     "poses_tum.txt",
@@ -50,7 +42,16 @@ class FastLioWebBroker(Node):
         self.process_cwd = str(self.get_parameter("process_cwd").value).strip()
         self.stop_timeout_sec = float(self.get_parameter("stop_timeout_sec").value)
         self.save_before_stop_timeout_sec = float(self.get_parameter("save_before_stop_timeout_sec").value)
+        self.frontend_map_save_timeout_sec = float(self.get_parameter("frontend_map_save_timeout_sec").value)
+        self.frontend_map_service_wait_sec = float(self.get_parameter("frontend_map_service_wait_sec").value)
         self.status_period_sec = float(self.get_parameter("status_period_sec").value)
+        self.fast_lio_current_frame_topic = str(self.get_parameter("fast_lio_current_frame_topic").value).strip()
+        self.fast_lio_global_map_topic = str(self.get_parameter("fast_lio_global_map_topic").value).strip()
+        self.fast_lio_map_save_service = str(self.get_parameter("fast_lio_map_save_service").value).strip()
+        self.current_frame_uses_global_map = (
+            not self.fast_lio_current_frame_topic
+            or self.fast_lio_current_frame_topic == self.fast_lio_global_map_topic
+        )
 
         self.state = "idle"
         self.message = "等待开始"
@@ -58,8 +59,7 @@ class FastLioWebBroker(Node):
         self.last_command = ""
         self.last_result = ""
         self._process: subprocess.Popen[str] | None = None
-        self._saw_raw = False
-        self._saw_map = False
+        self._last_current_output_at = 0.0
 
         cloud_qos = QoSProfile(depth=5)
         cloud_qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -73,32 +73,25 @@ class FastLioWebBroker(Node):
         sensor_qos = QoSProfile(depth=50)
         sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
 
-        self.raw_pub = self.create_publisher(PointCloud2, "/web_mapping/raw_cloud", cloud_qos)
         self.current_pub = self.create_publisher(PointCloud2, "/web_mapping/current_frame", cloud_qos)
         self.map_pub = self.create_publisher(PointCloud2, "/web_mapping/global_map", map_qos)
         self.pose_pub = self.create_publisher(PoseStamped, "/web_mapping/pose", reliable_qos)
         self.raw_path_pub = self.create_publisher(RosPath, "/web_mapping/raw_path", reliable_qos)
         self.optimized_path_pub = self.create_publisher(RosPath, "/web_mapping/optimized_path", reliable_qos)
         self.imu_pub = self.create_publisher(Imu, "/web_mapping/imu", sensor_qos)
-        self.lidar_status_pub = self.create_publisher(String, "/web_mapping/lidar_status", status_qos)
         self.status_pub = self.create_publisher(String, "/web_mapping/status", status_qos)
         self.save_pub = self.create_publisher(String, self.save_trigger_topic, reliable_qos)
 
-        if LivoxCustomMsg is not None:
-            self.raw_source_topic = str(self.get_parameter("livox_lidar_topic").value)
-            self.create_subscription(LivoxCustomMsg, self.raw_source_topic, self._livox_callback, sensor_qos)
-        else:
-            self.raw_source_topic = str(self.get_parameter("fast_lio_raw_cloud_topic").value)
-            self.create_subscription(PointCloud2, self.raw_source_topic, self._raw_callback, cloud_qos)
+        if not self.current_frame_uses_global_map:
+            self.create_subscription(
+                PointCloud2,
+                self.fast_lio_current_frame_topic,
+                self._current_callback,
+                cloud_qos,
+            )
         self.create_subscription(
             PointCloud2,
-            str(self.get_parameter("fast_lio_current_frame_topic").value),
-            self._relay(self.current_pub),
-            cloud_qos,
-        )
-        self.create_subscription(
-            PointCloud2,
-            str(self.get_parameter("fast_lio_global_map_topic").value),
+            self.fast_lio_global_map_topic,
             self._map_callback,
             map_qos,
         )
@@ -130,7 +123,15 @@ class FastLioWebBroker(Node):
         self.status_timer = self.create_timer(self.status_period_sec, self._publish_status)
 
         self.get_logger().info(f"Web broker map history root: {self.map_history_root}")
-        self.get_logger().info(f"Web raw cloud source: {self.raw_source_topic}")
+        self.get_logger().info("Web raw cloud is handled directly by web_mapping_bridge")
+        if self.current_frame_uses_global_map:
+            self.get_logger().info(
+                f"Web current-frame stream follows cumulative map: {self.fast_lio_global_map_topic}"
+            )
+        else:
+            self.get_logger().info(
+                f"Web current-frame stream source: {self.fast_lio_current_frame_topic}"
+            )
         self.get_logger().info("FAST-LIO web broker ready on /web_mapping/*")
         self._publish_status()
 
@@ -142,11 +143,12 @@ class FastLioWebBroker(Node):
         self.declare_parameter("process_cwd", "")
         self.declare_parameter("stop_timeout_sec", 8.0)
         self.declare_parameter("save_before_stop_timeout_sec", 30.0)
+        self.declare_parameter("frontend_map_save_timeout_sec", 180.0)
+        self.declare_parameter("frontend_map_service_wait_sec", 3.0)
         self.declare_parameter("status_period_sec", 0.5)
-        self.declare_parameter("livox_lidar_topic", "/livox/lidar")
-        self.declare_parameter("fast_lio_raw_cloud_topic", "cloud_registered_1")
-        self.declare_parameter("fast_lio_current_frame_topic", "corrected_current_pcd")
+        self.declare_parameter("fast_lio_current_frame_topic", "/cloud_registered_1")
         self.declare_parameter("fast_lio_global_map_topic", "corrected_map")
+        self.declare_parameter("fast_lio_map_save_service", "map_save")
         self.declare_parameter("fast_lio_pose_topic", "pose_stamped")
         self.declare_parameter("fast_lio_raw_path_topic", "ori_path")
         self.declare_parameter("fast_lio_optimized_path_topic", "corrected_path")
@@ -170,50 +172,23 @@ class FastLioWebBroker(Node):
 
         return callback
 
-    def _raw_callback(self, msg: PointCloud2) -> None:
-        self._saw_raw = True
-        self.raw_pub.publish(msg)
-        self._publish_lidar_status("online")
-
-    def _livox_callback(self, msg: Any) -> None:
-        cloud_msg = self._livox_to_pointcloud2(msg)
-        self._saw_raw = True
-        self.raw_pub.publish(cloud_msg)
-        self._publish_lidar_status("online")
-
-    def _livox_to_pointcloud2(self, msg: Any) -> PointCloud2:
-        points = getattr(msg, "points", [])
-        cloud = PointCloud2()
-        cloud.header = msg.header
-        cloud.height = 1
-        cloud.width = len(points)
-        cloud.is_bigendian = False
-        cloud.is_dense = False
-        cloud.point_step = 16
-        cloud.row_step = cloud.point_step * cloud.width
-        cloud.fields = [
-            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
-        ]
-        data = bytearray(cloud.row_step)
-        for index, point in enumerate(points):
-            struct.pack_into(
-                "<ffff",
-                data,
-                index * cloud.point_step,
-                float(point.x),
-                float(point.y),
-                float(point.z),
-                float(point.reflectivity) / 255.0,
-            )
-        cloud.data = bytes(data)
-        return cloud
+    def _current_callback(self, msg: PointCloud2) -> None:
+        self._mark_current_output()
+        self.current_pub.publish(msg)
 
     def _map_callback(self, msg: PointCloud2) -> None:
-        self._saw_map = True
         self.map_pub.publish(msg)
+        if self.current_frame_uses_global_map:
+            self._mark_current_output()
+            self.current_pub.publish(msg)
+
+    def _mark_current_output(self) -> None:
+        self._last_current_output_at = time.monotonic()
+
+    def _has_recent_current_output(self) -> bool:
+        if self._last_current_output_at <= 0.0:
+            return False
+        return time.monotonic() - self._last_current_output_at < 2.0
 
     def _command_callback(self, msg: String) -> None:
         try:
@@ -223,11 +198,11 @@ class FastLioWebBroker(Node):
             return
         command = str(payload.get("command", "")).strip()
         session_name = self._clean_session_name(str(payload.get("session_name", "")).strip())
-        if session_name:
+        if command != "start" and session_name:
             self.session_name = session_name
         self.last_command = command
         if command == "start":
-            self._start_mapping()
+            self._start_mapping(session_name)
         elif command == "stop":
             self._stop_mapping()
         elif command == "save":
@@ -250,20 +225,20 @@ class FastLioWebBroker(Node):
             self.session_name = f"map_{time.strftime('%Y%m%d_%H%M%S')}"
         return self.session_name
 
-    def _start_mapping(self) -> None:
-        self._ensure_session_name()
+    def _start_mapping(self, requested_session_name: str = "") -> None:
         if self._process and self._process.poll() is None:
-            self.state = "mapping" if self._saw_raw else "starting"
+            self.state = "mapping" if self._has_recent_current_output() else "starting"
             self.message = "建图已在运行"
             self.last_result = "already running"
             return
+        self.session_name = requested_session_name
+        self._ensure_session_name()
         if not self.start_command:
-            self.state = "mapping" if self._saw_raw else "starting"
+            self.state = "mapping" if self._has_recent_current_output() else "starting"
             self.message = "等待雷达数据"
             self.last_result = "attached to existing mapping topics"
             return
-        self._saw_raw = False
-        self._saw_map = False
+        self._last_current_output_at = 0.0
         command = self._format_start_command()
         try:
             self._process = subprocess.Popen(command, shell=True, cwd=self.process_cwd or None, preexec_fn=os.setsid)
@@ -279,7 +254,9 @@ class FastLioWebBroker(Node):
     def _stop_mapping(self) -> None:
         if self._process and self._process.poll() is None:
             save_root, save_started_at = self._publish_save_trigger()
-            save_detected = self._wait_for_saved_session(save_started_at, self.save_before_stop_timeout_sec)
+            frontend_saved = self._save_frontend_map(save_started_at)
+            metadata_saved = self._wait_for_saved_metadata(save_started_at, self.save_before_stop_timeout_sec)
+            map_saved = frontend_saved or self._map_file_is_new(self._frontend_map_path(), save_started_at)
             try:
                 os.killpg(os.getpgid(self._process.pid), signal.SIGINT)
             except ProcessLookupError:
@@ -293,13 +270,18 @@ class FastLioWebBroker(Node):
                     pass
                 self._process.wait()
             self._process = None
-            self.last_result = (
-                f"stopped; save detected: {save_root}"
-                if save_detected
-                else f"stopped; save requested: {save_root}"
-            )
             self.state = "stopped"
-            self.message = "建图已停止，地图已保存" if save_detected else "建图已停止，已请求保存地图"
+            self._last_current_output_at = 0.0
+            self.last_result = (
+                f"stopped; save root: {save_root}; "
+                f"metadata saved: {metadata_saved}; frontend map saved: {frontend_saved}"
+            )
+            if map_saved:
+                self.message = "建图已停止，累计地图已保存"
+            elif metadata_saved:
+                self.message = "建图已停止，已保存位姿，累计地图未生成"
+            else:
+                self.message = "建图已停止，已请求保存地图"
         elif self._process and self._process.poll() is not None:
             self._process = None
             self.last_result = "process already exited"
@@ -320,10 +302,22 @@ class FastLioWebBroker(Node):
         self._request_save("已请求保存地图")
 
     def _request_save(self, message: str) -> None:
-        save_root, _ = self._publish_save_trigger()
+        save_root, save_started_at = self._publish_save_trigger()
+        frontend_saved = self._save_frontend_map(save_started_at)
+        metadata_saved = self._wait_for_saved_metadata(save_started_at, self.save_before_stop_timeout_sec)
+        map_saved = frontend_saved or self._map_file_is_new(self._frontend_map_path(), save_started_at)
         self.state = "stopped"
-        self.message = message
-        self.last_result = f"save requested: {save_root}"
+        self._last_current_output_at = 0.0
+        if map_saved:
+            self.message = message
+        elif metadata_saved:
+            self.message = "已保存位姿，累计地图未生成"
+        else:
+            self.message = "已请求保存地图"
+        self.last_result = (
+            f"save requested: {save_root}; metadata saved: {metadata_saved}; "
+            f"frontend map saved: {frontend_saved}"
+        )
 
     def _publish_save_trigger(self) -> tuple[str, float]:
         self._ensure_session_name()
@@ -333,19 +327,19 @@ class FastLioWebBroker(Node):
         self.save_pub.publish(msg)
         return save_root, time.time()
 
-    def _wait_for_saved_session(self, started_at: float, timeout_sec: float) -> bool:
+    def _wait_for_saved_metadata(self, started_at: float, timeout_sec: float) -> bool:
         if not self.session_name:
             return False
         session_path = Path(self.map_history_root) / self.session_name
         deadline = time.time() + max(0.0, timeout_sec)
         while time.time() < deadline:
-            if self._session_has_new_files(session_path, started_at):
+            if self._session_has_new_metadata_files(session_path, started_at):
                 return True
             time.sleep(0.2)
-        return self._session_has_new_files(session_path, started_at)
+        return self._session_has_new_metadata_files(session_path, started_at)
 
-    def _session_has_new_files(self, session_path: Path, started_at: float) -> bool:
-        for filename in SAVED_MAP_MARKERS:
+    def _session_has_new_metadata_files(self, session_path: Path, started_at: float) -> bool:
+        for filename in SAVED_METADATA_MARKERS:
             path = session_path / filename
             if not path.is_file():
                 continue
@@ -356,20 +350,111 @@ class FastLioWebBroker(Node):
                 continue
         return False
 
-    def _publish_lidar_status(self, text: str) -> None:
-        msg = String()
-        msg.data = text
-        self.lidar_status_pub.publish(msg)
+    def _save_frontend_map(self, started_at: float) -> bool:
+        if not self.fast_lio_map_save_service or not self.session_name:
+            return False
+        frontend_map_path = self._frontend_map_path()
+        service_name = self.fast_lio_map_save_service
+        if not service_name.startswith("/"):
+            service_name = f"/{service_name}"
+        if not self._service_is_available(service_name):
+            self.get_logger().warning(f"FAST-LIO frontend map save service is unavailable: {service_name}")
+            return self._wait_for_map_file(frontend_map_path, started_at, 1.0)
+        try:
+            result = subprocess.run(
+                ["ros2", "service", "call", service_name, "std_srvs/srv/Trigger", "{}"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.frontend_map_save_timeout_sec,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.get_logger().warning(f"FAST-LIO frontend map save call failed: {exc}")
+            return self._wait_for_map_file(frontend_map_path, started_at, 5.0)
+        normalized_stdout = result.stdout.replace(" ", "").lower()
+        if result.returncode != 0 or ("success=true" not in normalized_stdout and "success:true" not in normalized_stdout):
+            stderr = result.stderr.strip()
+            stdout = result.stdout.strip()
+            self.get_logger().warning(
+                f"FAST-LIO frontend map save rejected: stdout={stdout} stderr={stderr}"
+            )
+            return False
+        return self._wait_for_map_file(frontend_map_path, started_at, 5.0)
+
+    def _frontend_map_path(self) -> Path:
+        return Path(self.map_history_root) / self.session_name / f"{self.session_name}_map.pcd"
+
+    def _service_is_available(self, service_name: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["ros2", "service", "type", service_name],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.frontend_map_service_wait_sec,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        service_type = result.stdout.strip()
+        return result.returncode == 0 and service_type == "std_srvs/srv/Trigger"
+
+    def _wait_for_map_file(self, path: Path, started_at: float, timeout_sec: float) -> bool:
+        deadline = time.time() + max(0.0, timeout_sec)
+        while time.time() < deadline:
+            if self._map_file_is_new(path, started_at):
+                return True
+            time.sleep(0.2)
+        return self._map_file_is_new(path, started_at)
+
+    @staticmethod
+    def _file_is_new(path: Path, started_at: float) -> bool:
+        if not path.is_file():
+            return False
+        try:
+            return path.stat().st_mtime >= started_at - 0.5
+        except OSError:
+            return False
+
+    @classmethod
+    def _map_file_is_new(cls, path: Path, started_at: float) -> bool:
+        return cls._file_is_new(path, started_at) and cls._pcd_has_points(path)
+
+    @staticmethod
+    def _pcd_has_points(path: Path) -> bool:
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(8192).decode("ascii", errors="ignore")
+        except OSError:
+            return False
+        width = 0
+        height = 1
+        for line in header.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[0].upper() == "POINTS":
+                try:
+                    return int(parts[1]) > 0
+                except ValueError:
+                    return False
+            if len(parts) >= 2 and parts[0].upper() == "WIDTH":
+                try:
+                    width = int(parts[1])
+                except ValueError:
+                    width = 0
+            if len(parts) >= 2 and parts[0].upper() == "HEIGHT":
+                try:
+                    height = int(parts[1])
+                except ValueError:
+                    height = 1
+            if line.strip().upper().startswith("DATA "):
+                break
+        return width * height > 0
 
     def _publish_status(self) -> None:
         self._refresh_process_state()
         if self.state in {"starting", "mapping"}:
-            if self._saw_map:
+            if self._has_recent_current_output():
                 self.state = "mapping"
                 self.message = "正在建图，地图持续更新中"
-            elif self._saw_raw:
-                self.state = "mapping"
-                self.message = "已收到雷达数据，正在生成地图"
         payload = {
             "type": "mapping_status",
             "state": self.state,

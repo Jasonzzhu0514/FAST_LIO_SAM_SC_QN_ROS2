@@ -9,6 +9,7 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
 
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -26,6 +27,8 @@ def generate_launch_description():
     rviz_use = LaunchConfiguration('rviz')
     rviz_cfg = LaunchConfiguration('rviz_cfg')
     start_livox_driver = LaunchConfiguration('start_livox_driver')
+    map_file_path = LaunchConfiguration('map_file_path')
+    publish_map = LaunchConfiguration('publish_map')
 
     declare_use_sim_time_cmd = DeclareLaunchArgument(
         'use_sim_time', default_value='false',
@@ -51,6 +54,14 @@ def generate_launch_description():
         'start_livox_driver', default_value='true',
         description='Start livox_ros_driver2 for MID360 input'
     )
+    declare_map_file_path_cmd = DeclareLaunchArgument(
+        'map_file_path', default_value='',
+        description='Output PCD path for the accumulated FAST-LIO frontend map'
+    )
+    declare_publish_map_cmd = DeclareLaunchArgument(
+        'publish_map', default_value='false',
+        description='Publish and accumulate the FAST-LIO frontend map'
+    )
 
     livox_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(livox_launch_path),
@@ -61,7 +72,11 @@ def generate_launch_description():
         package='fast_lio',
         executable='fastlio_mapping',
         parameters=[PathJoinSubstitution([config_path, config_file]),
-                    {'use_sim_time': use_sim_time}],
+                    {
+                        'use_sim_time': use_sim_time,
+                        'map_file_path': map_file_path,
+                        'publish.map_en': ParameterValue(publish_map, value_type=bool),
+                    }],
         output='screen'
     )
     rviz_node = Node(
@@ -78,6 +93,8 @@ def generate_launch_description():
     ld.add_action(declare_rviz_cmd)
     ld.add_action(declare_rviz_config_path_cmd)
     ld.add_action(declare_start_livox_driver_cmd)
+    ld.add_action(declare_map_file_path_cmd)
+    ld.add_action(declare_publish_map_cmd)
 
     ld.add_action(livox_launch)
     ld.add_action(fast_lio_node)

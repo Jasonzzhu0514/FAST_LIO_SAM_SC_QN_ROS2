@@ -33,7 +33,7 @@
       save_trigger_qos_depth: 1
 
     keyframe:
-      keyframe_threshold: 1.5
+      keyframe_threshold: 1.0
       num_submap_keyframes: 10
       enable_submap_matching: false
 
@@ -68,7 +68,7 @@
         rot_cost_diff_threshold: 0.0001
 
     result:
-      save_map_pcd: true
+      save_map_pcd: false
       save_map_bag: true
       save_in_kitti_format: true
       seq_name: "sequence"

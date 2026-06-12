@@ -33,6 +33,12 @@ def _fast_lio_frontend_launch(context, *args, **kwargs):
     fast_lio_share = get_package_share_directory('fast_lio')
     fast_lio_launch = os.path.join(fast_lio_share, 'launch', 'mapping.launch.py')
     fast_lio_config_path = os.path.join(fast_lio_share, 'config')
+    save_root = LaunchConfiguration('save_root').perform(context) or os.getcwd()
+    maps_directory_name = LaunchConfiguration('maps_directory_name').perform(context)
+    session_name = LaunchConfiguration('session_name').perform(context)
+    frontend_map_dir = os.path.join(save_root, maps_directory_name, session_name) if session_name else os.path.join(save_root, maps_directory_name)
+    frontend_map_filename = f'{session_name}_map.pcd' if session_name else 'result.pcd'
+    frontend_map_path = os.path.join(frontend_map_dir, frontend_map_filename)
 
     return [
         IncludeLaunchDescription(
@@ -43,6 +49,8 @@ def _fast_lio_frontend_launch(context, *args, **kwargs):
                 'rviz': 'false',
                 'start_livox_driver': 'false',
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'map_file_path': frontend_map_path,
+                'publish_map': 'true',
             }.items()
         )
     ]
@@ -62,8 +70,6 @@ def generate_launch_description():
     maps_directory_name = LaunchConfiguration('maps_directory_name')
     session_name = LaunchConfiguration('session_name')
     save_trigger_topic = LaunchConfiguration('save_trigger_topic')
-    livox_lidar_topic = LaunchConfiguration('livox_lidar_topic')
-    fast_lio_raw_cloud_topic = LaunchConfiguration('fast_lio_raw_cloud_topic')
     fast_lio_current_frame_topic = LaunchConfiguration('fast_lio_current_frame_topic')
     fast_lio_global_map_topic = LaunchConfiguration('fast_lio_global_map_topic')
     fast_lio_pose_topic = LaunchConfiguration('fast_lio_pose_topic')
@@ -132,9 +138,7 @@ def generate_launch_description():
             default_value='save_dir',
             description='Topic used by the back-end to trigger map saving.'
         ),
-        DeclareLaunchArgument('livox_lidar_topic', default_value='/livox/lidar'),
-        DeclareLaunchArgument('fast_lio_raw_cloud_topic', default_value='cloud_registered_1'),
-        DeclareLaunchArgument('fast_lio_current_frame_topic', default_value='corrected_current_pcd'),
+        DeclareLaunchArgument('fast_lio_current_frame_topic', default_value='/cloud_registered_1'),
         DeclareLaunchArgument('fast_lio_global_map_topic', default_value='corrected_map'),
         DeclareLaunchArgument('fast_lio_pose_topic', default_value='pose_stamped'),
         DeclareLaunchArgument('fast_lio_raw_path_topic', default_value='ori_path'),
@@ -165,10 +169,9 @@ def generate_launch_description():
                 'map_history_root': map_history_root,
                 'save_root': save_root,
                 'save_trigger_topic': save_trigger_topic,
-                'livox_lidar_topic': livox_lidar_topic,
-                'fast_lio_raw_cloud_topic': fast_lio_raw_cloud_topic,
                 'fast_lio_current_frame_topic': fast_lio_current_frame_topic,
                 'fast_lio_global_map_topic': fast_lio_global_map_topic,
+                'fast_lio_map_save_service': 'map_save',
                 'fast_lio_pose_topic': fast_lio_pose_topic,
                 'fast_lio_raw_path_topic': fast_lio_raw_path_topic,
                 'fast_lio_optimized_path_topic': fast_lio_optimized_path_topic,
