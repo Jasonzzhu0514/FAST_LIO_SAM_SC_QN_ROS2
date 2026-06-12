@@ -34,6 +34,8 @@
 
     keyframe:
       keyframe_threshold: 1.0
+      max_odom_translation_norm: 10000.0
+      max_odom_keyframe_delta: 100.0
       num_submap_keyframes: 10
       enable_submap_matching: false
 

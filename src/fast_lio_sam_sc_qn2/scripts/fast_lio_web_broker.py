@@ -16,6 +16,7 @@ from typing import Any
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path as RosPath
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu, PointCloud2
@@ -48,6 +49,7 @@ class FastLioWebBroker(Node):
         self.fast_lio_current_frame_topic = str(self.get_parameter("fast_lio_current_frame_topic").value).strip()
         self.fast_lio_global_map_topic = str(self.get_parameter("fast_lio_global_map_topic").value).strip()
         self.fast_lio_map_save_service = str(self.get_parameter("fast_lio_map_save_service").value).strip()
+        self.stop_wait_topics = self._split_topics(str(self.get_parameter("stop_wait_topics").value))
         self.current_frame_uses_global_map = (
             not self.fast_lio_current_frame_topic
             or self.fast_lio_current_frame_topic == self.fast_lio_global_map_topic
@@ -145,6 +147,12 @@ class FastLioWebBroker(Node):
         self.declare_parameter("save_before_stop_timeout_sec", 30.0)
         self.declare_parameter("frontend_map_save_timeout_sec", 180.0)
         self.declare_parameter("frontend_map_service_wait_sec", 3.0)
+        self.declare_parameter("process_exit_timeout_sec", 3.0)
+        self.declare_parameter("output_quiet_timeout_sec", 2.5)
+        self.declare_parameter(
+            "stop_wait_topics",
+            "/livox/lidar,/livox/imu,/cloud_registered_1,/Odometry_loc,corrected_map",
+        )
         self.declare_parameter("status_period_sec", 0.5)
         self.declare_parameter("fast_lio_current_frame_topic", "/cloud_registered_1")
         self.declare_parameter("fast_lio_global_map_topic", "corrected_map")
@@ -253,30 +261,80 @@ class FastLioWebBroker(Node):
 
     def _stop_mapping(self) -> None:
         if self._process and self._process.poll() is None:
+            process = self._process
+            process_group = self._process_group(process)
+            self.state = "stopping"
+            self.message = "建图正在停止，正在保存地图"
+            self.last_result = "stopping"
+            self._publish_status()
             save_root, save_started_at = self._publish_save_trigger()
+            self.message = "建图正在停止，正在保存累计地图"
+            self._publish_status()
             frontend_saved = self._save_frontend_map(save_started_at)
+            self.message = "建图正在停止，正在等待地图元数据"
+            self._publish_status()
             metadata_saved = self._wait_for_saved_metadata(save_started_at, self.save_before_stop_timeout_sec)
             map_saved = frontend_saved or self._map_file_is_new(self._frontend_map_path(), save_started_at)
+            self.message = "地图保存完成，正在停止雷达与建图节点"
+            self._publish_status()
             try:
-                os.killpg(os.getpgid(self._process.pid), signal.SIGINT)
+                if process_group is not None:
+                    os.killpg(process_group, signal.SIGINT)
+                else:
+                    process.send_signal(signal.SIGINT)
             except ProcessLookupError:
                 pass
             try:
-                self._process.wait(timeout=self.stop_timeout_sec)
+                process.wait(timeout=self.stop_timeout_sec)
             except subprocess.TimeoutExpired:
+                self.message = "雷达与建图节点停止超时，正在强制结束"
+                self._publish_status()
                 try:
-                    os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
+                    if process_group is not None:
+                        os.killpg(process_group, signal.SIGTERM)
+                    else:
+                        process.terminate()
                 except ProcessLookupError:
                     pass
-                self._process.wait()
+                try:
+                    process.wait(timeout=max(1.0, self.stop_timeout_sec * 0.5))
+                except subprocess.TimeoutExpired:
+                    try:
+                        if process_group is not None:
+                            os.killpg(process_group, signal.SIGKILL)
+                        else:
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+            self.message = "雷达与建图节点正在退出，等待输出停止"
+            self._publish_status()
+            processes_exited = self._wait_for_process_group_exit(process_group)
+            if not processes_exited:
+                self.message = "雷达与建图节点仍在运行，正在强制结束"
+                self._publish_status()
+                try:
+                    if process_group is not None:
+                        os.killpg(process_group, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except ProcessLookupError:
+                    pass
+                processes_exited = self._wait_for_process_group_exit(process_group)
+            output_quiet = self._wait_for_output_quiet()
             self._process = None
-            self.state = "stopped"
+            self.state = "stopped" if processes_exited and output_quiet else "error"
             self._last_current_output_at = 0.0
             self.last_result = (
                 f"stopped; save root: {save_root}; "
-                f"metadata saved: {metadata_saved}; frontend map saved: {frontend_saved}"
+                f"metadata saved: {metadata_saved}; frontend map saved: {frontend_saved}; "
+                f"processes exited: {processes_exited}; output quiet: {output_quiet}"
             )
-            if map_saved:
+            if not processes_exited:
+                self.message = "地图已保存，但雷达与建图节点未完全退出"
+            elif not output_quiet:
+                self.message = "地图已保存，但雷达或建图话题仍有输出"
+            elif map_saved:
                 self.message = "建图已停止，累计地图已保存"
             elif metadata_saved:
                 self.message = "建图已停止，已保存位姿，累计地图未生成"
@@ -302,8 +360,15 @@ class FastLioWebBroker(Node):
         self._request_save("已请求保存地图")
 
     def _request_save(self, message: str) -> None:
+        self.state = "saving"
+        self.message = "正在保存地图"
+        self._publish_status()
         save_root, save_started_at = self._publish_save_trigger()
+        self.message = "正在保存累计地图"
+        self._publish_status()
         frontend_saved = self._save_frontend_map(save_started_at)
+        self.message = "正在等待地图元数据"
+        self._publish_status()
         metadata_saved = self._wait_for_saved_metadata(save_started_at, self.save_before_stop_timeout_sec)
         map_saved = frontend_saved or self._map_file_is_new(self._frontend_map_path(), save_started_at)
         self.state = "stopped"
@@ -406,6 +471,49 @@ class FastLioWebBroker(Node):
             time.sleep(0.2)
         return self._map_file_is_new(path, started_at)
 
+    def _process_group(self, process: subprocess.Popen[str]) -> int | None:
+        try:
+            return os.getpgid(process.pid)
+        except ProcessLookupError:
+            return None
+
+    def _wait_for_process_group_exit(self, process_group: int | None) -> bool:
+        if process_group is None:
+            return True
+        timeout_sec = float(self.get_parameter("process_exit_timeout_sec").value)
+        deadline = time.time() + max(0.0, timeout_sec)
+        while time.time() < deadline:
+            if not self._process_group_exists(process_group):
+                return True
+            time.sleep(0.1)
+        return not self._process_group_exists(process_group)
+
+    @staticmethod
+    def _process_group_exists(process_group: int) -> bool:
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _wait_for_output_quiet(self) -> bool:
+        timeout_sec = float(self.get_parameter("output_quiet_timeout_sec").value)
+        deadline = time.time() + max(0.0, timeout_sec)
+        while time.time() < deadline:
+            if self._output_topics_are_quiet():
+                return True
+            time.sleep(0.1)
+        return self._output_topics_are_quiet()
+
+    def _output_topics_are_quiet(self) -> bool:
+        return all(self.count_publishers(topic) == 0 for topic in self.stop_wait_topics)
+
+    @staticmethod
+    def _split_topics(value: str) -> list[str]:
+        return [topic.strip() for topic in value.split(",") if topic.strip()]
+
     @staticmethod
     def _file_is_new(path: Path, started_at: float) -> bool:
         if not path.is_file():
@@ -476,7 +584,7 @@ class FastLioWebBroker(Node):
         if exit_code is None:
             return
         self._process = None
-        if self.state in {"starting", "mapping", "stopping"}:
+        if self.state in {"starting", "mapping"}:
             self.state = "stopped" if exit_code == 0 else "error"
             self.message = "建图已停止" if exit_code == 0 else "建图进程已退出"
             self.last_result = f"process exited: {exit_code}"
@@ -497,11 +605,12 @@ def main() -> None:
     node = FastLioWebBroker()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

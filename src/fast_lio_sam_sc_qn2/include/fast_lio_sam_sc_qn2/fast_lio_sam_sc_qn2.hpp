@@ -48,6 +48,7 @@ private:
     void setupRosInterfaces();
 
     void updateOdomsAndPaths(const PosePcd &pose_pcd_in);
+    bool isPoseUsable(const Eigen::Matrix4d &pose_eig, const Eigen::Matrix4d *reference_pose = nullptr) const;
     bool checkIfKeyframe(const PosePcd &pose_pcd_in, const PosePcd &latest_pose_pcd);
     visualization_msgs::msg::Marker getLoopMarkers(const gtsam::Values &corrected_esti_in);
     void saveResults(const std::string &save_dir, bool from_destructor);
@@ -114,6 +115,8 @@ private:
     gtsam::Values init_esti_;
     gtsam::Values corrected_esti_;
     double keyframe_thr_ = 1.5;
+    double max_odom_translation_norm_ = 10000.0;
+    double max_odom_keyframe_delta_ = 100.0;
     double voxel_res_ = 0.3;
     std::vector<std::pair<size_t, size_t>> loop_idx_pairs_;
 

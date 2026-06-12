@@ -3,7 +3,7 @@ import shlex
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -109,6 +109,9 @@ def _broker_launch(context, *args, **kwargs):
                 'fast_lio_raw_path_topic': LaunchConfiguration('fast_lio_raw_path_topic'),
                 'fast_lio_optimized_path_topic': LaunchConfiguration('fast_lio_optimized_path_topic'),
                 'fast_lio_imu_topic': LaunchConfiguration('fast_lio_imu_topic'),
+                'process_exit_timeout_sec': LaunchConfiguration('process_exit_timeout_sec'),
+                'output_quiet_timeout_sec': LaunchConfiguration('output_quiet_timeout_sec'),
+                'stop_wait_topics': LaunchConfiguration('stop_wait_topics'),
             }],
         )
     ]
@@ -145,6 +148,16 @@ def generate_launch_description():
             description='Use ROS simulation time.',
         ),
         DeclareLaunchArgument(
+            'ros_domain_id',
+            default_value='42',
+            description='ROS domain used by the Web Mapping stack to avoid topic collisions.',
+        ),
+        DeclareLaunchArgument(
+            'ros_localhost_only',
+            default_value='1',
+            description='Limit the Web Mapping ROS graph to localhost by default.',
+        ),
+        DeclareLaunchArgument(
             'map_history_root',
             default_value='maps',
             description='Map history directory exposed to web_mapping.',
@@ -167,6 +180,21 @@ def generate_launch_description():
         DeclareLaunchArgument('fast_lio_raw_path_topic', default_value='ori_path'),
         DeclareLaunchArgument('fast_lio_optimized_path_topic', default_value='corrected_path'),
         DeclareLaunchArgument('fast_lio_imu_topic', default_value='/livox/imu'),
+        DeclareLaunchArgument(
+            'process_exit_timeout_sec',
+            default_value='3.0',
+            description='Time to wait for mapping child processes to exit before forcing shutdown.',
+        ),
+        DeclareLaunchArgument(
+            'output_quiet_timeout_sec',
+            default_value='2.5',
+            description='Time to wait for mapping output topics to have no publishers before reporting stopped.',
+        ),
+        DeclareLaunchArgument(
+            'stop_wait_topics',
+            default_value='/livox/lidar,/livox/imu,/cloud_registered_1,/Odometry_loc,corrected_map',
+            description='Comma-separated output topics that must have no publishers before stop completes.',
+        ),
         DeclareLaunchArgument(
             'start_web_ui',
             default_value='true',
@@ -207,6 +235,8 @@ def generate_launch_description():
             default_value='0.5',
             description='Minimum browser cloud send interval for global map snapshots.',
         ),
+        SetEnvironmentVariable('ROS_DOMAIN_ID', LaunchConfiguration('ros_domain_id')),
+        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', LaunchConfiguration('ros_localhost_only')),
         OpaqueFunction(function=_broker_launch),
         OpaqueFunction(function=_web_mapping_launch),
     ])

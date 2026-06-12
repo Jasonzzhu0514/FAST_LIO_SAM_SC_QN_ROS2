@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <ctime>
+#include <cmath>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -131,6 +132,8 @@ void FastLioSamScQn2::declareParameters()
     declare_parameter<int>("output.save_trigger_qos_depth", 1);
 
     declare_parameter<double>("keyframe.keyframe_threshold", 1.5);
+    declare_parameter<double>("keyframe.max_odom_translation_norm", 10000.0);
+    declare_parameter<double>("keyframe.max_odom_keyframe_delta", 100.0);
     declare_parameter<int>("keyframe.num_submap_keyframes", 10);
     declare_parameter<bool>("keyframe.enable_submap_matching", false);
 
@@ -207,6 +210,8 @@ void FastLioSamScQn2::loadParameters()
     save_trigger_qos_depth_ = get_parameter("output.save_trigger_qos_depth").as_int();
 
     keyframe_thr_ = get_parameter("keyframe.keyframe_threshold").as_double();
+    max_odom_translation_norm_ = get_parameter("keyframe.max_odom_translation_norm").as_double();
+    max_odom_keyframe_delta_ = get_parameter("keyframe.max_odom_keyframe_delta").as_double();
     lc_config_.num_submap_keyframes_ = get_parameter("keyframe.num_submap_keyframes").as_int();
     lc_config_.enable_submap_matching_ = get_parameter("keyframe.enable_submap_matching").as_bool();
 
@@ -307,6 +312,21 @@ void FastLioSamScQn2::odomPcdCallback(const nav_msgs::msg::Odometry::ConstShared
 {
     Eigen::Matrix4d last_odom_tf = current_frame_.pose_eig_;
     current_frame_ = PosePcd(*odom_msg, *pcd_msg, current_keyframe_idx_, input_cloud_is_world_frame_);
+    const Eigen::Matrix4d *reference_pose = is_initialized_ ? &last_odom_tf : nullptr;
+    if (!isPoseUsable(current_frame_.pose_eig_, reference_pose))
+    {
+        const auto translation = current_frame_.pose_eig_.block<3, 1>(0, 3);
+        RCLCPP_WARN_THROTTLE(
+            get_logger(),
+            *get_clock(),
+            1000,
+            "Ignoring unusable odometry pose: stamp=%.9f norm=%.3f delta_limit=%.3f norm_limit=%.3f",
+            current_frame_.timestamp_,
+            translation.norm(),
+            max_odom_keyframe_delta_,
+            max_odom_translation_norm_);
+        return;
+    }
 
     {
         std::lock_guard<std::mutex> lock(realtime_pose_mutex_);
@@ -808,4 +828,31 @@ bool FastLioSamScQn2::checkIfKeyframe(const PosePcd &pose_pcd_in, const PosePcd 
          pose_pcd_in.pose_corrected_eig_.block<3, 1>(0, 3))
             .norm();
     return keyframe_thr_ < translation_delta;
+}
+
+bool FastLioSamScQn2::isPoseUsable(const Eigen::Matrix4d &pose_eig,
+                                   const Eigen::Matrix4d *reference_pose) const
+{
+    const auto translation = pose_eig.block<3, 1>(0, 3);
+    for (int i = 0; i < 3; ++i)
+    {
+        if (!std::isfinite(translation(i)))
+        {
+            return false;
+        }
+    }
+    if (max_odom_translation_norm_ > 0.0 && translation.norm() > max_odom_translation_norm_)
+    {
+        return false;
+    }
+    if (reference_pose != nullptr && max_odom_keyframe_delta_ > 0.0)
+    {
+        const double delta =
+            (translation - reference_pose->block<3, 1>(0, 3)).norm();
+        if (!std::isfinite(delta) || delta > max_odom_keyframe_delta_)
+        {
+            return false;
+        }
+    }
+    return true;
 }

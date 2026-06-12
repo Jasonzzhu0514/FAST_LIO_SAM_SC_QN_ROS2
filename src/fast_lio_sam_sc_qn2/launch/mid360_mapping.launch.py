@@ -144,6 +144,21 @@ def generate_launch_description():
         DeclareLaunchArgument('fast_lio_raw_path_topic', default_value='ori_path'),
         DeclareLaunchArgument('fast_lio_optimized_path_topic', default_value='corrected_path'),
         DeclareLaunchArgument('fast_lio_imu_topic', default_value='/livox/imu'),
+        DeclareLaunchArgument(
+            'process_exit_timeout_sec',
+            default_value='3.0',
+            description='Time to wait for mapping child processes to exit before forcing shutdown.',
+        ),
+        DeclareLaunchArgument(
+            'output_quiet_timeout_sec',
+            default_value='2.5',
+            description='Time to wait for mapping output topics to have no publishers before reporting stopped.',
+        ),
+        DeclareLaunchArgument(
+            'stop_wait_topics',
+            default_value='/livox/lidar,/livox/imu,/cloud_registered_1,/Odometry_loc,corrected_map',
+            description='Comma-separated output topics that must have no publishers before stop completes.',
+        ),
         OpaqueFunction(function=_livox_driver_launch),
         OpaqueFunction(function=_fast_lio_frontend_launch),
         Node(
@@ -176,6 +191,9 @@ def generate_launch_description():
                 'fast_lio_raw_path_topic': fast_lio_raw_path_topic,
                 'fast_lio_optimized_path_topic': fast_lio_optimized_path_topic,
                 'fast_lio_imu_topic': fast_lio_imu_topic,
+                'process_exit_timeout_sec': LaunchConfiguration('process_exit_timeout_sec'),
+                'output_quiet_timeout_sec': LaunchConfiguration('output_quiet_timeout_sec'),
+                'stop_wait_topics': LaunchConfiguration('stop_wait_topics'),
             }]
         )
     ])
