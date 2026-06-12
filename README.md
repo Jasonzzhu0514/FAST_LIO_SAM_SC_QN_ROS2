@@ -1,6 +1,6 @@
 # fast_lio_sam_sc_qn2 ROS 2 工作空间
 
-FAST-LIO-SAM-SC-QN 的 ROS 2 工作空间，主要用于 Livox MID360/MID360s。工作空间内包含 ROS 2 版 FAST-LIO 前端和 `fast_lio_sam_sc_qn2` 后端：前端输出里程计和配准点云，后端完成关键帧、回环检测、配准、GTSAM 位姿图优化、地图发布和结果保存。
+FAST-LIO-SAM-SC-QN 的 ROS 2 工作空间，主要用于 Livox MID360/MID360s。工作空间内包含 ROS 2 版 FAST-LIO 前端和 `fast_lio_sam_sc_qn2` 后端：前端输出里程计和配准点云，后端完成关键帧、回环检测、配准、GTSAM 位姿图优化、地图发布和结果保存。`src/web_mapping` 作为子模块提供浏览器可视化界面，`fast_lio_web_broker` 负责把本算法的话题、状态、地图路径和建图控制对齐到通用 `/web_mapping/*` 接口。
 
 默认输入配置位于 `src/fast_lio_sam_sc_qn2/config/mid360.yaml`：
 
@@ -182,9 +182,69 @@ ros2 launch fast_lio_sam_sc_qn2 mid360_mapping.launch.py
 ros2 topic hz /livox/lidar
 ros2 topic hz /livox/imu
 ros2 topic list | grep -E 'Odometry_loc|cloud_registered_1|corrected_current_pcd|pose_stamped'
+ros2 topic list | grep web_mapping
 ```
 
 `src/fast_lio_sam_sc_qn2/third_party/FAST_LIO` 是 ROS 2 版 FAST-LIO 前端源码，作为普通目录随工作空间编译，不作为 submodule。
+
+## Web Mapping
+
+`src/web_mapping` 是独立 Web Mapping 子模块。`fast_lio_web_broker` 是本项目的适配层，负责把 FAST-LIO-SAM-SC-QN 的话题、状态、控制命令和地图保存路径对齐到通用 `/web_mapping/*` 接口。
+
+如果建图已经由 `mid360_mapping.launch.py` 启动，默认会同时启动 broker。另开终端启动 Web UI：
+
+```bash
+cd ~/Documents/fast_lio_sam_sc_qn_ros2
+source /opt/ros/<distro>/setup.bash
+source install/setup.bash
+ros2 launch web_mapping web_mapping.launch.py
+```
+
+如果希望由网页按钮控制开始/停止建图，启动控制入口：
+
+```bash
+cd ~/Documents/fast_lio_sam_sc_qn_ros2
+source /opt/ros/<distro>/setup.bash
+source install/setup.bash
+ros2 launch fast_lio_sam_sc_qn2 web_mapping_control.launch.py
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8765
+```
+
+broker 发布的标准接口：
+
+- `/web_mapping/raw_cloud`：由 `/livox/lidar` 原始 Livox CustomMsg 转成 PointCloud2
+- `/web_mapping/current_frame`
+- `/web_mapping/global_map`
+- `/web_mapping/pose`
+- `/web_mapping/raw_path`
+- `/web_mapping/optimized_path`
+- `/web_mapping/imu`
+- `/web_mapping/lidar_status`
+- `/web_mapping/status`
+
+Web 前端的开始、停止、保存命令会发送到 `/web_mapping/command`。broker 会把这些通用命令转成当前算法的实际控制逻辑：
+
+- 附着模式：`mid360_mapping.launch.py` 已经启动建图，Web 只负责显示、停止状态和触发 `save_dir`
+- 控制模式：`web_mapping_control.launch.py` 先启动 Web 与 broker，网页点击“开始建图”后再拉起 Livox、FAST-LIO 前端和后端
+
+历史地图读取路径由 broker 通过 `/web_mapping/status` 暴露，默认读取本工作空间的 `maps/`，不是 `web_mapping` 子模块内的目录。保存地图时，后端仍按 FAST-LIO-SAM-SC-QN 的规则写入：
+
+```text
+<workspace>/maps/<session>/
+```
+
+如果需要改地图目录：
+
+```bash
+ros2 launch fast_lio_sam_sc_qn2 web_mapping_control.launch.py map_history_root:=/data/slam/maps
+```
+
+这时 Web 会读取 `/data/slam/maps`，broker 会让后端保存到 `/data/slam/maps/<session>/`。
 
 ## 自定义配置
 

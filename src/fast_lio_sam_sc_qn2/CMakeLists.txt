@@ -195,4 +195,9 @@ install(DIRECTORY scripts/
   USE_SOURCE_PERMISSIONS
 )
 
+install(PROGRAMS
+  scripts/fast_lio_web_broker.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()

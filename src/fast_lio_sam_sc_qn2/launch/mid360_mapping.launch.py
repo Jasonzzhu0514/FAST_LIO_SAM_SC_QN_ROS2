@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -55,6 +56,20 @@ def generate_launch_description():
     backend_config_file = LaunchConfiguration('backend_config_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     node_name = LaunchConfiguration('node_name')
+    start_web_broker = LaunchConfiguration('start_web_broker')
+    map_history_root = LaunchConfiguration('map_history_root')
+    save_root = LaunchConfiguration('save_root')
+    maps_directory_name = LaunchConfiguration('maps_directory_name')
+    session_name = LaunchConfiguration('session_name')
+    save_trigger_topic = LaunchConfiguration('save_trigger_topic')
+    livox_lidar_topic = LaunchConfiguration('livox_lidar_topic')
+    fast_lio_raw_cloud_topic = LaunchConfiguration('fast_lio_raw_cloud_topic')
+    fast_lio_current_frame_topic = LaunchConfiguration('fast_lio_current_frame_topic')
+    fast_lio_global_map_topic = LaunchConfiguration('fast_lio_global_map_topic')
+    fast_lio_pose_topic = LaunchConfiguration('fast_lio_pose_topic')
+    fast_lio_raw_path_topic = LaunchConfiguration('fast_lio_raw_path_topic')
+    fast_lio_optimized_path_topic = LaunchConfiguration('fast_lio_optimized_path_topic')
+    fast_lio_imu_topic = LaunchConfiguration('fast_lio_imu_topic')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -87,6 +102,44 @@ def generate_launch_description():
             default_value='fast_lio_sam_sc_qn2_node',
             description='Back-end node name.'
         ),
+        DeclareLaunchArgument(
+            'start_web_broker',
+            default_value='true',
+            description='Start the web_mapping broker adapter for this SLAM back-end.'
+        ),
+        DeclareLaunchArgument(
+            'map_history_root',
+            default_value='maps',
+            description='Map history directory exposed to web_mapping.'
+        ),
+        DeclareLaunchArgument(
+            'save_root',
+            default_value='',
+            description='Root directory used by the back-end when saving maps. Empty means current working directory.'
+        ),
+        DeclareLaunchArgument(
+            'maps_directory_name',
+            default_value='maps',
+            description='Directory name created under save_root for saved map sessions.'
+        ),
+        DeclareLaunchArgument(
+            'session_name',
+            default_value='',
+            description='Optional fixed map session name for saved results.'
+        ),
+        DeclareLaunchArgument(
+            'save_trigger_topic',
+            default_value='save_dir',
+            description='Topic used by the back-end to trigger map saving.'
+        ),
+        DeclareLaunchArgument('livox_lidar_topic', default_value='/livox/lidar'),
+        DeclareLaunchArgument('fast_lio_raw_cloud_topic', default_value='cloud_registered_1'),
+        DeclareLaunchArgument('fast_lio_current_frame_topic', default_value='corrected_current_pcd'),
+        DeclareLaunchArgument('fast_lio_global_map_topic', default_value='corrected_map'),
+        DeclareLaunchArgument('fast_lio_pose_topic', default_value='pose_stamped'),
+        DeclareLaunchArgument('fast_lio_raw_path_topic', default_value='ori_path'),
+        DeclareLaunchArgument('fast_lio_optimized_path_topic', default_value='corrected_path'),
+        DeclareLaunchArgument('fast_lio_imu_topic', default_value='/livox/imu'),
         OpaqueFunction(function=_livox_driver_launch),
         OpaqueFunction(function=_fast_lio_frontend_launch),
         Node(
@@ -94,6 +147,32 @@ def generate_launch_description():
             executable='fast_lio_sam_sc_qn2_node',
             name=node_name,
             output='screen',
-            parameters=[backend_config_file, {'use_sim_time': use_sim_time}]
+            parameters=[backend_config_file, {
+                'use_sim_time': use_sim_time,
+                'result.save_directory': save_root,
+                'result.maps_directory_name': maps_directory_name,
+                'result.session_name': session_name,
+            }]
+        ),
+        Node(
+            package='fast_lio_sam_sc_qn2',
+            executable='fast_lio_web_broker.py',
+            name='fast_lio_web_broker',
+            output='screen',
+            condition=IfCondition(start_web_broker),
+            parameters=[{
+                'use_sim_time': use_sim_time,
+                'map_history_root': map_history_root,
+                'save_root': save_root,
+                'save_trigger_topic': save_trigger_topic,
+                'livox_lidar_topic': livox_lidar_topic,
+                'fast_lio_raw_cloud_topic': fast_lio_raw_cloud_topic,
+                'fast_lio_current_frame_topic': fast_lio_current_frame_topic,
+                'fast_lio_global_map_topic': fast_lio_global_map_topic,
+                'fast_lio_pose_topic': fast_lio_pose_topic,
+                'fast_lio_raw_path_topic': fast_lio_raw_path_topic,
+                'fast_lio_optimized_path_topic': fast_lio_optimized_path_topic,
+                'fast_lio_imu_topic': fast_lio_imu_topic,
+            }]
         )
     ])

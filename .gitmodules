@@ -1,3 +1,6 @@
 [submodule "src/livox_ros_driver2"]
 	path = src/livox_ros_driver2
 	url = https://github.com/Livox-SDK/livox_ros_driver2.git
+[submodule "src/web_mapping"]
+	path = src/web_mapping
+	url = git@github.com:Jasonzzhu0514/web_mapping.git

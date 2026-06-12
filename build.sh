@@ -39,6 +39,7 @@ colcon build --symlink-install \
   --base-paths \
     src/livox_ros_driver2 \
     src/fast_lio_sam_sc_qn2 \
+    src/web_mapping \
     src/fast_lio_sam_sc_qn2/third_party/FAST_LIO \
   "$@" \
   --cmake-args -DROS_EDITION=ROS2 -DDISTRO_ROS="${ROS_DISTRO}"
