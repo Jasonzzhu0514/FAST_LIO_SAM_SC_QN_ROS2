@@ -37,7 +37,7 @@ def _fast_lio_frontend_launch(context, *args, **kwargs):
     maps_directory_name = LaunchConfiguration('maps_directory_name').perform(context)
     session_name = LaunchConfiguration('session_name').perform(context)
     frontend_map_dir = os.path.join(save_root, maps_directory_name, session_name) if session_name else os.path.join(save_root, maps_directory_name)
-    frontend_map_filename = f'{session_name}_map.pcd' if session_name else 'result.pcd'
+    frontend_map_filename = f'{session_name}_frontend.pcd' if session_name else 'frontend_result.pcd'
     frontend_map_path = os.path.join(frontend_map_dir, frontend_map_filename)
 
     return [
@@ -51,6 +51,13 @@ def _fast_lio_frontend_launch(context, *args, **kwargs):
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
                 'map_file_path': frontend_map_path,
                 'publish_map': 'true',
+                'cloud_registered_topic': LaunchConfiguration('fast_lio_current_frame_topic'),
+                'cloud_registered_body_topic': '/web_mapping/fast_lio/cloud_registered_body',
+                'cloud_effected_topic': '/web_mapping/fast_lio/cloud_effected',
+                'laser_map_topic': '/web_mapping/fast_lio/laser_map',
+                'odometry_topic': LaunchConfiguration('fast_lio_odom_topic'),
+                'path_topic': '/web_mapping/fast_lio/path',
+                'map_save_service': LaunchConfiguration('fast_lio_map_save_service'),
             }.items()
         )
     ]
@@ -72,6 +79,8 @@ def generate_launch_description():
     save_trigger_topic = LaunchConfiguration('save_trigger_topic')
     fast_lio_current_frame_topic = LaunchConfiguration('fast_lio_current_frame_topic')
     fast_lio_global_map_topic = LaunchConfiguration('fast_lio_global_map_topic')
+    fast_lio_odom_topic = LaunchConfiguration('fast_lio_odom_topic')
+    fast_lio_map_save_service = LaunchConfiguration('fast_lio_map_save_service')
     fast_lio_pose_topic = LaunchConfiguration('fast_lio_pose_topic')
     fast_lio_raw_path_topic = LaunchConfiguration('fast_lio_raw_path_topic')
     fast_lio_optimized_path_topic = LaunchConfiguration('fast_lio_optimized_path_topic')
@@ -140,6 +149,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('fast_lio_current_frame_topic', default_value='/cloud_registered_1'),
         DeclareLaunchArgument('fast_lio_global_map_topic', default_value='corrected_map'),
+        DeclareLaunchArgument('fast_lio_odom_topic', default_value='/Odometry_loc'),
+        DeclareLaunchArgument('fast_lio_map_save_service', default_value='map_save'),
         DeclareLaunchArgument('fast_lio_pose_topic', default_value='pose_stamped'),
         DeclareLaunchArgument('fast_lio_raw_path_topic', default_value='ori_path'),
         DeclareLaunchArgument('fast_lio_optimized_path_topic', default_value='corrected_path'),
@@ -168,6 +179,13 @@ def generate_launch_description():
             output='screen',
             parameters=[backend_config_file, {
                 'use_sim_time': use_sim_time,
+                'input.odom_topic': fast_lio_odom_topic,
+                'input.cloud_topic': fast_lio_current_frame_topic,
+                'output.corrected_map_topic': fast_lio_global_map_topic,
+                'output.realtime_pose_topic': fast_lio_pose_topic,
+                'output.original_path_topic': fast_lio_raw_path_topic,
+                'output.corrected_path_topic': fast_lio_optimized_path_topic,
+                'output.save_trigger_topic': save_trigger_topic,
                 'result.save_directory': save_root,
                 'result.maps_directory_name': maps_directory_name,
                 'result.session_name': session_name,
@@ -186,7 +204,7 @@ def generate_launch_description():
                 'save_trigger_topic': save_trigger_topic,
                 'fast_lio_current_frame_topic': fast_lio_current_frame_topic,
                 'fast_lio_global_map_topic': fast_lio_global_map_topic,
-                'fast_lio_map_save_service': 'map_save',
+                'fast_lio_map_save_service': fast_lio_map_save_service,
                 'fast_lio_pose_topic': fast_lio_pose_topic,
                 'fast_lio_raw_path_topic': fast_lio_raw_path_topic,
                 'fast_lio_optimized_path_topic': fast_lio_optimized_path_topic,

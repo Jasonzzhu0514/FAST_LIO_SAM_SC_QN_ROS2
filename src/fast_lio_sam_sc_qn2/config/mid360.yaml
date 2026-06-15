@@ -33,14 +33,15 @@
       save_trigger_qos_depth: 1
 
     keyframe:
-      keyframe_threshold: 1.0
+      keyframe_threshold: 0.35
+      rotation_threshold_deg: 10.0
       max_odom_translation_norm: 10000.0
       max_odom_keyframe_delta: 100.0
       num_submap_keyframes: 10
       enable_submap_matching: false
 
     quatro_nano_gicp_voxel_resolution: 0.3
-    save_voxel_resolution: 0.15
+    save_voxel_resolution: 0.03
     scancontext_max_correspondence_distance: 35.0
 
     nano_gicp:
@@ -70,7 +71,7 @@
         rot_cost_diff_threshold: 0.0001
 
     result:
-      save_map_pcd: false
+      save_map_pcd: true
       save_map_bag: true
       save_in_kitti_format: true
       seq_name: "sequence"

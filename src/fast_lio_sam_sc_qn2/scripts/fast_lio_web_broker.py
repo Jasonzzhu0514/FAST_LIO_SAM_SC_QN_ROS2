@@ -46,9 +46,20 @@ class FastLioWebBroker(Node):
         self.frontend_map_save_timeout_sec = float(self.get_parameter("frontend_map_save_timeout_sec").value)
         self.frontend_map_service_wait_sec = float(self.get_parameter("frontend_map_service_wait_sec").value)
         self.status_period_sec = float(self.get_parameter("status_period_sec").value)
+        self.livox_lidar_topic = str(self.get_parameter("livox_lidar_topic").value).strip()
         self.fast_lio_current_frame_topic = str(self.get_parameter("fast_lio_current_frame_topic").value).strip()
         self.fast_lio_global_map_topic = str(self.get_parameter("fast_lio_global_map_topic").value).strip()
+        self.fast_lio_odom_topic = str(self.get_parameter("fast_lio_odom_topic").value).strip()
         self.fast_lio_map_save_service = str(self.get_parameter("fast_lio_map_save_service").value).strip()
+        self.fast_lio_imu_topic = str(self.get_parameter("fast_lio_imu_topic").value).strip()
+        self.input_ready_topics = self._preferred_text_parameter(
+            "input_ready_topics",
+            "runtime_ready_topics",
+        )
+        self.input_ready_timeout_sec = self._preferred_float_parameter(
+            "input_ready_timeout_sec",
+            "runtime_ready_timeout_sec",
+        )
         self.stop_wait_topics = self._split_topics(str(self.get_parameter("stop_wait_topics").value))
         self.current_frame_uses_global_map = (
             not self.fast_lio_current_frame_topic
@@ -117,7 +128,7 @@ class FastLioWebBroker(Node):
         )
         self.create_subscription(
             Imu,
-            str(self.get_parameter("fast_lio_imu_topic").value),
+            self.fast_lio_imu_topic,
             self._relay(self.imu_pub),
             sensor_qos,
         )
@@ -154,13 +165,38 @@ class FastLioWebBroker(Node):
             "/livox/lidar,/livox/imu,/cloud_registered_1,/Odometry_loc,corrected_map",
         )
         self.declare_parameter("status_period_sec", 0.5)
+        self.declare_parameter("livox_lidar_topic", "/livox/lidar")
         self.declare_parameter("fast_lio_current_frame_topic", "/cloud_registered_1")
         self.declare_parameter("fast_lio_global_map_topic", "corrected_map")
+        self.declare_parameter("fast_lio_odom_topic", "/Odometry_loc")
         self.declare_parameter("fast_lio_map_save_service", "map_save")
         self.declare_parameter("fast_lio_pose_topic", "pose_stamped")
         self.declare_parameter("fast_lio_raw_path_topic", "ori_path")
         self.declare_parameter("fast_lio_optimized_path_topic", "corrected_path")
         self.declare_parameter("fast_lio_imu_topic", "/livox/imu")
+        self.declare_parameter("input_ready_topics", "auto")
+        self.declare_parameter("input_ready_timeout_sec", 2.0)
+        self.declare_parameter("runtime_ready_topics", "auto")
+        self.declare_parameter("runtime_ready_timeout_sec", 2.0)
+
+    def _preferred_text_parameter(self, preferred_name: str, legacy_name: str) -> str:
+        preferred = str(self.get_parameter(preferred_name).value).strip()
+        legacy = str(self.get_parameter(legacy_name).value).strip()
+        if preferred and preferred.lower() != "auto":
+            return preferred
+        if legacy and legacy.lower() != "auto":
+            return legacy
+        return preferred or legacy
+
+    def _preferred_float_parameter(self, preferred_name: str, legacy_name: str) -> float:
+        preferred = float(self.get_parameter(preferred_name).value)
+        legacy = float(self.get_parameter(legacy_name).value)
+        default_value = 2.0
+        if preferred != default_value:
+            return preferred
+        if legacy != default_value:
+            return legacy
+        return preferred
 
     def _resolve_path(self, value: str) -> str:
         path_text = value.strip()
@@ -241,13 +277,24 @@ class FastLioWebBroker(Node):
             return
         self.session_name = requested_session_name
         self._ensure_session_name()
+        command = self._format_start_command() if self.start_command else ""
+        command = self._resolve_auto_start_command(command)
+        missing_topics = self._wait_for_required_external_topics(command)
+        if missing_topics:
+            self.state = "error"
+            self.message = "未检测到建图输入数据"
+            self.last_result = f"missing external publishers: {', '.join(missing_topics)}"
+            self.get_logger().warning(
+                "Refusing to start mapping because required external publishers are missing: "
+                + ", ".join(missing_topics)
+            )
+            return
         if not self.start_command:
             self.state = "mapping" if self._has_recent_current_output() else "starting"
             self.message = "等待雷达数据"
             self.last_result = "attached to existing mapping topics"
             return
         self._last_current_output_at = 0.0
-        command = self._format_start_command()
         try:
             self._process = subprocess.Popen(command, shell=True, cwd=self.process_cwd or None, preexec_fn=os.setsid)
         except OSError as exc:
@@ -268,13 +315,14 @@ class FastLioWebBroker(Node):
             self.last_result = "stopping"
             self._publish_status()
             save_root, save_started_at = self._publish_save_trigger()
-            self.message = "建图正在停止，正在保存累计地图"
+            self.message = "建图正在停止，正在保存前端累计地图"
             self._publish_status()
             frontend_saved = self._save_frontend_map(save_started_at)
-            self.message = "建图正在停止，正在等待地图元数据"
+            self.message = "建图正在停止，正在等待后端优化地图"
             self._publish_status()
             metadata_saved = self._wait_for_saved_metadata(save_started_at, self.save_before_stop_timeout_sec)
-            map_saved = frontend_saved or self._map_file_is_new(self._frontend_map_path(), save_started_at)
+            backend_map_saved = self._wait_for_map_file(self._backend_map_path(), save_started_at, 5.0)
+            map_saved = backend_map_saved or frontend_saved
             self.message = "地图保存完成，正在停止雷达与建图节点"
             self._publish_status()
             try:
@@ -323,19 +371,21 @@ class FastLioWebBroker(Node):
                 processes_exited = self._wait_for_process_group_exit(process_group)
             output_quiet = self._wait_for_output_quiet()
             self._process = None
-            self.state = "stopped" if processes_exited and output_quiet else "error"
+            save_completed = backend_map_saved or frontend_saved or metadata_saved
+            self.state = "stopped" if processes_exited and save_completed else "error"
             self._last_current_output_at = 0.0
             self.last_result = (
                 f"stopped; save root: {save_root}; "
-                f"metadata saved: {metadata_saved}; frontend map saved: {frontend_saved}; "
+                f"metadata saved: {metadata_saved}; backend map saved: {backend_map_saved}; "
+                f"frontend map saved: {frontend_saved}; "
                 f"processes exited: {processes_exited}; output quiet: {output_quiet}"
             )
             if not processes_exited:
                 self.message = "地图已保存，但雷达与建图节点未完全退出"
-            elif not output_quiet:
-                self.message = "地图已保存，但雷达或建图话题仍有输出"
-            elif map_saved:
-                self.message = "建图已停止，累计地图已保存"
+            elif backend_map_saved:
+                self.message = "建图已停止，后端优化地图已保存"
+            elif frontend_saved:
+                self.message = "建图已停止，前端累计地图已保存"
             elif metadata_saved:
                 self.message = "建图已停止，已保存位姿，累计地图未生成"
             else:
@@ -355,7 +405,7 @@ class FastLioWebBroker(Node):
 
     def _save_mapping(self) -> None:
         if self.start_command and (self._process is None or self._process.poll() is not None):
-            self._request_save("地图已保存，可在历史地图中下载")
+            self._request_save("地图已保存，可在地图库中下载")
             return
         self._request_save("已请求保存地图")
 
@@ -364,16 +414,21 @@ class FastLioWebBroker(Node):
         self.message = "正在保存地图"
         self._publish_status()
         save_root, save_started_at = self._publish_save_trigger()
-        self.message = "正在保存累计地图"
+        self.message = "正在保存前端累计地图"
         self._publish_status()
         frontend_saved = self._save_frontend_map(save_started_at)
-        self.message = "正在等待地图元数据"
+        self.message = "正在等待后端优化地图"
         self._publish_status()
         metadata_saved = self._wait_for_saved_metadata(save_started_at, self.save_before_stop_timeout_sec)
-        map_saved = frontend_saved or self._map_file_is_new(self._frontend_map_path(), save_started_at)
+        backend_map_saved = self._wait_for_map_file(self._backend_map_path(), save_started_at, 5.0)
+        map_saved = backend_map_saved or frontend_saved
         self.state = "stopped"
         self._last_current_output_at = 0.0
-        if map_saved:
+        if backend_map_saved:
+            self.message = "后端优化地图已保存"
+        elif frontend_saved:
+            self.message = "前端累计地图已保存"
+        elif map_saved:
             self.message = message
         elif metadata_saved:
             self.message = "已保存位姿，累计地图未生成"
@@ -381,6 +436,7 @@ class FastLioWebBroker(Node):
             self.message = "已请求保存地图"
         self.last_result = (
             f"save requested: {save_root}; metadata saved: {metadata_saved}; "
+            f"backend map saved: {backend_map_saved}; "
             f"frontend map saved: {frontend_saved}"
         )
 
@@ -447,6 +503,9 @@ class FastLioWebBroker(Node):
         return self._wait_for_map_file(frontend_map_path, started_at, 5.0)
 
     def _frontend_map_path(self) -> Path:
+        return Path(self.map_history_root) / self.session_name / f"{self.session_name}_frontend.pcd"
+
+    def _backend_map_path(self) -> Path:
         return Path(self.map_history_root) / self.session_name / f"{self.session_name}_map.pcd"
 
     def _service_is_available(self, service_name: str) -> bool:
@@ -510,9 +569,131 @@ class FastLioWebBroker(Node):
     def _output_topics_are_quiet(self) -> bool:
         return all(self.count_publishers(topic) == 0 for topic in self.stop_wait_topics)
 
+    def _resolve_auto_start_command(self, command: str) -> str:
+        command = self._resolve_auto_launch_arg(
+            command,
+            "start_livox_driver",
+            [self.livox_lidar_topic, self.fast_lio_imu_topic],
+        )
+        return self._resolve_auto_launch_arg(command, "start_fast_lio_frontend", [], reuse_external=False)
+
+    def _resolve_auto_launch_arg(
+        self,
+        command: str,
+        name: str,
+        external_topics: list[str],
+        reuse_external: bool = True,
+    ) -> str:
+        if not command or not self._launch_arg_is_auto(command, name):
+            return command
+        should_reuse_external = reuse_external and self._wait_for_publishers(self._dedupe_topics(external_topics))
+        resolved_value = "false" if should_reuse_external else "true"
+        self.get_logger().info(
+            f"Resolved {name}:=auto to {resolved_value} "
+            f"({'external publishers found' if should_reuse_external else 'web-managed stage required'})"
+        )
+        return self._replace_launch_arg(command, name, resolved_value)
+
+    def _wait_for_publishers(self, topics: list[str]) -> bool:
+        if not topics:
+            return False
+        deadline = time.monotonic() + max(0.0, self.input_ready_timeout_sec)
+        while time.monotonic() < deadline:
+            if not self._missing_publishers(topics):
+                return True
+            time.sleep(0.1)
+        return not self._missing_publishers(topics)
+
+    def _wait_for_required_external_topics(self, command: str) -> list[str]:
+        required_topics = self._required_external_topics(command)
+        if not required_topics:
+            return []
+        deadline = time.monotonic() + max(0.0, self.input_ready_timeout_sec)
+        missing_topics = self._missing_publishers(required_topics)
+        while missing_topics and time.monotonic() < deadline:
+            time.sleep(0.1)
+            missing_topics = self._missing_publishers(required_topics)
+        return missing_topics
+
+    def _required_external_topics(self, command: str) -> list[str]:
+        configured_topics = self._configured_input_ready_topics()
+        if configured_topics is not None:
+            return configured_topics
+        required_topics: list[str] = []
+        if self._launch_arg_is_false(command, "start_livox_driver"):
+            required_topics.extend([self.livox_lidar_topic, self.fast_lio_imu_topic])
+        if self._launch_arg_is_false(command, "start_fast_lio_frontend"):
+            required_topics.extend([self.fast_lio_current_frame_topic, self.fast_lio_odom_topic])
+        return self._dedupe_topics(required_topics)
+
+    def _configured_input_ready_topics(self) -> list[str] | None:
+        value = self.input_ready_topics.strip()
+        normalized = value.lower()
+        if normalized in {"", "auto"}:
+            return None
+        if normalized in {"none", "off", "false", "disabled"}:
+            return []
+        return self._dedupe_topics(self._split_topics(value))
+
+    def _missing_publishers(self, topics: list[str]) -> list[str]:
+        return [topic for topic in topics if self.count_publishers(topic) == 0]
+
+    @classmethod
+    def _launch_arg_is_false(cls, command: str, name: str) -> bool:
+        value = cls._launch_arg_value(command, name)
+        return value is not None and value.strip().lower() in {"0", "false", "no", "off"}
+
+    @classmethod
+    def _launch_arg_is_auto(cls, command: str, name: str) -> bool:
+        value = cls._launch_arg_value(command, name)
+        return value is not None and value.strip().lower() == "auto"
+
+    @staticmethod
+    def _launch_arg_value(command: str, name: str) -> str | None:
+        prefix = f"{name}:="
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
+        for part in parts:
+            if part.startswith(prefix):
+                return part[len(prefix):]
+        return None
+
+    @staticmethod
+    def _replace_launch_arg(command: str, name: str, value: str) -> str:
+        prefix = f"{name}:="
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
+        replaced = False
+        next_parts: list[str] = []
+        for part in parts:
+            if part.startswith(prefix):
+                next_parts.append(f"{prefix}{value}")
+                replaced = True
+            else:
+                next_parts.append(part)
+        if not replaced:
+            next_parts.append(f"{prefix}{value}")
+        return " ".join(shlex.quote(part) for part in next_parts)
+
     @staticmethod
     def _split_topics(value: str) -> list[str]:
         return [topic.strip() for topic in value.split(",") if topic.strip()]
+
+    @staticmethod
+    def _dedupe_topics(topics: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for topic in topics:
+            normalized = topic.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
 
     @staticmethod
     def _file_is_new(path: Path, started_at: float) -> bool:

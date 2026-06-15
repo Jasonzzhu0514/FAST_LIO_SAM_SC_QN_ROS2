@@ -30,6 +30,7 @@ find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
+find_package(livox_ros_driver2 REQUIRED)
 
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io filters kdtree features registration)
@@ -73,6 +74,7 @@ set(ROS2_DEPS
   pcl_conversions
   rosbag2_cpp
   rosbag2_storage
+  livox_ros_driver2
 )
 
 # Keep the vendored algorithm build order aligned with the upstream ROS 1
@@ -173,8 +175,16 @@ add_executable(${PROJECT_NAME}_node src/main.cpp)
 target_link_libraries(${PROJECT_NAME}_node ${PROJECT_NAME}_core)
 ament_target_dependencies(${PROJECT_NAME}_node ${ROS2_DEPS})
 
+add_executable(livox_raw_preview_node src/livox_raw_preview_node.cpp)
+ament_target_dependencies(livox_raw_preview_node
+  rclcpp
+  sensor_msgs
+  livox_ros_driver2
+)
+
 install(TARGETS
   ${PROJECT_NAME}_node
+  livox_raw_preview_node
   ${PROJECT_NAME}_core
   nano_gicp_vendor
   quatro_vendor

@@ -29,6 +29,13 @@ def generate_launch_description():
     start_livox_driver = LaunchConfiguration('start_livox_driver')
     map_file_path = LaunchConfiguration('map_file_path')
     publish_map = LaunchConfiguration('publish_map')
+    cloud_registered_topic = LaunchConfiguration('cloud_registered_topic')
+    cloud_registered_body_topic = LaunchConfiguration('cloud_registered_body_topic')
+    cloud_effected_topic = LaunchConfiguration('cloud_effected_topic')
+    laser_map_topic = LaunchConfiguration('laser_map_topic')
+    odometry_topic = LaunchConfiguration('odometry_topic')
+    path_topic = LaunchConfiguration('path_topic')
+    map_save_service = LaunchConfiguration('map_save_service')
 
     declare_use_sim_time_cmd = DeclareLaunchArgument(
         'use_sim_time', default_value='false',
@@ -62,6 +69,34 @@ def generate_launch_description():
         'publish_map', default_value='false',
         description='Publish and accumulate the FAST-LIO frontend map'
     )
+    declare_cloud_registered_topic_cmd = DeclareLaunchArgument(
+        'cloud_registered_topic', default_value='/cloud_registered_1',
+        description='FAST-LIO world-frame cloud output topic'
+    )
+    declare_cloud_registered_body_topic_cmd = DeclareLaunchArgument(
+        'cloud_registered_body_topic', default_value='/cloud_registered_body_1',
+        description='FAST-LIO body-frame cloud output topic'
+    )
+    declare_cloud_effected_topic_cmd = DeclareLaunchArgument(
+        'cloud_effected_topic', default_value='/cloud_effected_1',
+        description='FAST-LIO effect cloud output topic'
+    )
+    declare_laser_map_topic_cmd = DeclareLaunchArgument(
+        'laser_map_topic', default_value='/Laser_map_1',
+        description='FAST-LIO accumulated map output topic'
+    )
+    declare_odometry_topic_cmd = DeclareLaunchArgument(
+        'odometry_topic', default_value='/Odometry_loc',
+        description='FAST-LIO odometry output topic'
+    )
+    declare_path_topic_cmd = DeclareLaunchArgument(
+        'path_topic', default_value='/path_1',
+        description='FAST-LIO path output topic'
+    )
+    declare_map_save_service_cmd = DeclareLaunchArgument(
+        'map_save_service', default_value='map_save',
+        description='FAST-LIO accumulated map save service'
+    )
 
     livox_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(livox_launch_path),
@@ -77,6 +112,15 @@ def generate_launch_description():
                         'map_file_path': map_file_path,
                         'publish.map_en': ParameterValue(publish_map, value_type=bool),
                     }],
+        remappings=[
+            ('/cloud_registered_1', cloud_registered_topic),
+            ('/cloud_registered_body_1', cloud_registered_body_topic),
+            ('/cloud_effected_1', cloud_effected_topic),
+            ('/Laser_map_1', laser_map_topic),
+            ('/Odometry_loc', odometry_topic),
+            ('/path_1', path_topic),
+            ('map_save', map_save_service),
+        ],
         output='screen'
     )
     rviz_node = Node(
@@ -95,6 +139,13 @@ def generate_launch_description():
     ld.add_action(declare_start_livox_driver_cmd)
     ld.add_action(declare_map_file_path_cmd)
     ld.add_action(declare_publish_map_cmd)
+    ld.add_action(declare_cloud_registered_topic_cmd)
+    ld.add_action(declare_cloud_registered_body_topic_cmd)
+    ld.add_action(declare_cloud_effected_topic_cmd)
+    ld.add_action(declare_laser_map_topic_cmd)
+    ld.add_action(declare_odometry_topic_cmd)
+    ld.add_action(declare_path_topic_cmd)
+    ld.add_action(declare_map_save_service_cmd)
 
     ld.add_action(livox_launch)
     ld.add_action(fast_lio_node)

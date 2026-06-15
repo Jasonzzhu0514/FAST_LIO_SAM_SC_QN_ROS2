@@ -1,5 +1,6 @@
 #include <fast_lio_sam_sc_qn2/fast_lio_sam_sc_qn2.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <cmath>
@@ -132,6 +133,7 @@ void FastLioSamScQn2::declareParameters()
     declare_parameter<int>("output.save_trigger_qos_depth", 1);
 
     declare_parameter<double>("keyframe.keyframe_threshold", 1.5);
+    declare_parameter<double>("keyframe.rotation_threshold_deg", 10.0);
     declare_parameter<double>("keyframe.max_odom_translation_norm", 10000.0);
     declare_parameter<double>("keyframe.max_odom_keyframe_delta", 100.0);
     declare_parameter<int>("keyframe.num_submap_keyframes", 10);
@@ -210,6 +212,7 @@ void FastLioSamScQn2::loadParameters()
     save_trigger_qos_depth_ = get_parameter("output.save_trigger_qos_depth").as_int();
 
     keyframe_thr_ = get_parameter("keyframe.keyframe_threshold").as_double();
+    keyframe_rotation_thr_deg_ = get_parameter("keyframe.rotation_threshold_deg").as_double();
     max_odom_translation_norm_ = get_parameter("keyframe.max_odom_translation_norm").as_double();
     max_odom_keyframe_delta_ = get_parameter("keyframe.max_odom_keyframe_delta").as_double();
     lc_config_.num_submap_keyframes_ = get_parameter("keyframe.num_submap_keyframes").as_int();
@@ -382,14 +385,17 @@ void FastLioSamScQn2::odomPcdCallback(const nav_msgs::msg::Odometry::ConstShared
         (latest_keyframe.pose_corrected_eig_.block<3, 1>(0, 3) -
          current_frame_.pose_corrected_eig_.block<3, 1>(0, 3))
             .norm();
+    const double keyframe_rotation_deg = keyframeRotationDeltaDeg(current_frame_, latest_keyframe);
     {
         std::lock_guard<std::mutex> lock(keyframes_mutex_);
         keyframes_.push_back(current_frame_);
         RCLCPP_INFO(get_logger(),
-                    "Added keyframe: idx=%d distance=%.3f threshold=%.3f points=%zu total_keyframes=%zu",
+                    "Added keyframe: idx=%d distance=%.3f threshold=%.3f rotation_deg=%.2f rotation_threshold_deg=%.2f points=%zu total_keyframes=%zu",
                     current_frame_.idx_,
                     keyframe_distance,
                     keyframe_thr_,
+                    keyframe_rotation_deg,
+                    keyframe_rotation_thr_deg_,
                     current_frame_.pcd_.size(),
                     keyframes_.size());
     }
@@ -827,7 +833,23 @@ bool FastLioSamScQn2::checkIfKeyframe(const PosePcd &pose_pcd_in, const PosePcd 
         (latest_pose_pcd.pose_corrected_eig_.block<3, 1>(0, 3) -
          pose_pcd_in.pose_corrected_eig_.block<3, 1>(0, 3))
             .norm();
-    return keyframe_thr_ < translation_delta;
+    const double rotation_delta_deg = keyframeRotationDeltaDeg(pose_pcd_in, latest_pose_pcd);
+    const bool translation_keyframe = keyframe_thr_ > 0.0 && keyframe_thr_ < translation_delta;
+    const bool rotation_keyframe =
+        keyframe_rotation_thr_deg_ > 0.0 && keyframe_rotation_thr_deg_ < rotation_delta_deg;
+    return translation_keyframe || rotation_keyframe;
+}
+
+double FastLioSamScQn2::keyframeRotationDeltaDeg(const PosePcd &pose_pcd_in,
+                                                 const PosePcd &latest_pose_pcd) const
+{
+    const Eigen::Matrix3d latest_rot = latest_pose_pcd.pose_corrected_eig_.block<3, 3>(0, 0);
+    const Eigen::Matrix3d current_rot = pose_pcd_in.pose_corrected_eig_.block<3, 3>(0, 0);
+    const Eigen::Matrix3d delta_rot = latest_rot.transpose() * current_rot;
+    const double trace = delta_rot.trace();
+    const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
+    constexpr double rad_to_deg = 180.0 / 3.14159265358979323846;
+    return std::acos(cos_angle) * rad_to_deg;
 }
 
 bool FastLioSamScQn2::isPoseUsable(const Eigen::Matrix4d &pose_eig,

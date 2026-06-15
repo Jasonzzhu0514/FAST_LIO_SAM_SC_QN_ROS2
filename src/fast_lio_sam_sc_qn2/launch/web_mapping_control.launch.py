@@ -52,16 +52,38 @@ def _web_mapping_launch(context, *args, **kwargs):
             launch_arguments={
                 'host': LaunchConfiguration('web_host'),
                 'port': LaunchConfiguration('web_port'),
-                'livox_custom_topic': LaunchConfiguration('livox_lidar_topic'),
+                'raw_cloud_topic': LaunchConfiguration('web_raw_cloud_topic'),
+                'livox_custom_topic': '',
                 'optimized_cloud_topic': '/web_mapping/current_frame',
                 'max_raw_points_per_cloud': LaunchConfiguration('web_raw_points'),
                 'max_optimized_points_per_cloud': LaunchConfiguration('web_current_points'),
                 'max_map_points_per_cloud': LaunchConfiguration('web_map_points'),
                 'min_cloud_interval_sec': LaunchConfiguration('web_cloud_interval'),
+                'min_raw_cloud_interval_sec': LaunchConfiguration('web_raw_interval'),
                 'min_map_interval_sec': LaunchConfiguration('web_map_interval'),
                 'map_history_root': map_history_root,
                 'map_history_limit': LaunchConfiguration('map_history_limit'),
             }.items(),
+        )
+    ]
+
+
+def _raw_preview_launch(context, *args, **kwargs):
+    if not _as_bool(LaunchConfiguration('start_raw_preview').perform(context)):
+        return []
+    return [
+        Node(
+            package='fast_lio_sam_sc_qn2',
+            executable='livox_raw_preview_node',
+            name='livox_raw_preview_node',
+            output='screen',
+            parameters=[{
+                'input_topic': LaunchConfiguration('livox_lidar_topic'),
+                'output_topic': LaunchConfiguration('web_raw_cloud_topic'),
+                'status_topic': '/web_mapping/lidar_status',
+                'max_points': LaunchConfiguration('web_raw_points'),
+                'min_interval_sec': LaunchConfiguration('web_raw_interval'),
+            }],
         )
     ]
 
@@ -84,8 +106,10 @@ def _broker_launch(context, *args, **kwargs):
         f"map_history_root:={map_history_root}",
         f"save_root:={save_root}",
         f"maps_directory_name:={maps_directory_name}",
-        "fast_lio_current_frame_topic:=/cloud_registered_1",
-        "fast_lio_global_map_topic:=corrected_map",
+        f"fast_lio_current_frame_topic:={_launch_value(context, 'fast_lio_current_frame_topic')}",
+        f"fast_lio_global_map_topic:={_launch_value(context, 'fast_lio_global_map_topic')}",
+        f"fast_lio_odom_topic:={_launch_value(context, 'fast_lio_odom_topic')}",
+        f"fast_lio_map_save_service:={_launch_value(context, 'fast_lio_map_save_service')}",
         "{session_arg}",
     ]
     start_command = ' '.join(shlex.quote(part) for part in mapping_launch)
@@ -102,13 +126,19 @@ def _broker_launch(context, *args, **kwargs):
                 'save_trigger_topic': LaunchConfiguration('save_trigger_topic'),
                 'start_command': start_command,
                 'process_cwd': workspace_root,
+                'livox_lidar_topic': LaunchConfiguration('livox_lidar_topic'),
                 'fast_lio_current_frame_topic': LaunchConfiguration('fast_lio_current_frame_topic'),
                 'fast_lio_global_map_topic': LaunchConfiguration('fast_lio_global_map_topic'),
+                'fast_lio_odom_topic': LaunchConfiguration('fast_lio_odom_topic'),
                 'fast_lio_map_save_service': LaunchConfiguration('fast_lio_map_save_service'),
                 'fast_lio_pose_topic': LaunchConfiguration('fast_lio_pose_topic'),
                 'fast_lio_raw_path_topic': LaunchConfiguration('fast_lio_raw_path_topic'),
                 'fast_lio_optimized_path_topic': LaunchConfiguration('fast_lio_optimized_path_topic'),
                 'fast_lio_imu_topic': LaunchConfiguration('fast_lio_imu_topic'),
+                'input_ready_topics': LaunchConfiguration('input_ready_topics'),
+                'input_ready_timeout_sec': LaunchConfiguration('input_ready_timeout_sec'),
+                'runtime_ready_topics': LaunchConfiguration('runtime_ready_topics'),
+                'runtime_ready_timeout_sec': LaunchConfiguration('runtime_ready_timeout_sec'),
                 'process_exit_timeout_sec': LaunchConfiguration('process_exit_timeout_sec'),
                 'output_quiet_timeout_sec': LaunchConfiguration('output_quiet_timeout_sec'),
                 'stop_wait_topics': LaunchConfiguration('stop_wait_topics'),
@@ -173,13 +203,35 @@ def generate_launch_description():
             description='Topic used by the back-end to trigger map saving.',
         ),
         DeclareLaunchArgument('livox_lidar_topic', default_value='/livox/lidar'),
-        DeclareLaunchArgument('fast_lio_current_frame_topic', default_value='/cloud_registered_1'),
-        DeclareLaunchArgument('fast_lio_global_map_topic', default_value='corrected_map'),
-        DeclareLaunchArgument('fast_lio_map_save_service', default_value='map_save'),
-        DeclareLaunchArgument('fast_lio_pose_topic', default_value='pose_stamped'),
-        DeclareLaunchArgument('fast_lio_raw_path_topic', default_value='ori_path'),
-        DeclareLaunchArgument('fast_lio_optimized_path_topic', default_value='corrected_path'),
+        DeclareLaunchArgument('web_raw_cloud_topic', default_value='/web_mapping/raw_cloud'),
+        DeclareLaunchArgument('fast_lio_current_frame_topic', default_value='/web_mapping/fast_lio/cloud_registered'),
+        DeclareLaunchArgument('fast_lio_global_map_topic', default_value='/web_mapping/backend/corrected_map'),
+        DeclareLaunchArgument('fast_lio_odom_topic', default_value='/web_mapping/fast_lio/odometry'),
+        DeclareLaunchArgument('fast_lio_map_save_service', default_value='/web_mapping/fast_lio/map_save'),
+        DeclareLaunchArgument('fast_lio_pose_topic', default_value='/web_mapping/backend/pose'),
+        DeclareLaunchArgument('fast_lio_raw_path_topic', default_value='/web_mapping/backend/raw_path'),
+        DeclareLaunchArgument('fast_lio_optimized_path_topic', default_value='/web_mapping/backend/optimized_path'),
         DeclareLaunchArgument('fast_lio_imu_topic', default_value='/livox/imu'),
+        DeclareLaunchArgument(
+            'input_ready_topics',
+            default_value='auto',
+            description='Comma-separated input topics required before Web start. auto derives from disabled launch stages; none disables the guard.',
+        ),
+        DeclareLaunchArgument(
+            'input_ready_timeout_sec',
+            default_value='2.0',
+            description='Time to wait for required input topic publishers before choosing start behavior.',
+        ),
+        DeclareLaunchArgument(
+            'runtime_ready_topics',
+            default_value='auto',
+            description='Deprecated alias for input_ready_topics.',
+        ),
+        DeclareLaunchArgument(
+            'runtime_ready_timeout_sec',
+            default_value='2.0',
+            description='Deprecated alias for input_ready_timeout_sec.',
+        ),
         DeclareLaunchArgument(
             'process_exit_timeout_sec',
             default_value='3.0',
@@ -192,13 +244,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'stop_wait_topics',
-            default_value='/livox/lidar,/livox/imu,/cloud_registered_1,/Odometry_loc,corrected_map',
+            default_value='/web_mapping/fast_lio/cloud_registered,/web_mapping/fast_lio/odometry,/web_mapping/backend/corrected_map',
             description='Comma-separated output topics that must have no publishers before stop completes.',
         ),
         DeclareLaunchArgument(
             'start_web_ui',
             default_value='true',
             description='Start web_mapping bridge together with this broker.',
+        ),
+        DeclareLaunchArgument(
+            'start_raw_preview',
+            default_value='true',
+            description='Start a lightweight Livox raw preview converter for the browser.',
         ),
         DeclareLaunchArgument(
             'web_host',
@@ -212,7 +269,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'web_raw_points',
-            default_value='5000',
+            default_value='1000',
             description='Maximum Livox raw points sent to the browser per frame.',
         ),
         DeclareLaunchArgument(
@@ -222,13 +279,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'web_map_points',
-            default_value='50000',
+            default_value='200000',
             description='Maximum global-map points sent to the browser per frame.',
         ),
         DeclareLaunchArgument(
             'web_cloud_interval',
             default_value='0.12',
-            description='Minimum browser cloud send interval for raw/current streams.',
+            description='Minimum browser cloud send interval for current-frame streams.',
+        ),
+        DeclareLaunchArgument(
+            'web_raw_interval',
+            default_value='0.5',
+            description='Minimum browser cloud send interval for Livox raw previews.',
         ),
         DeclareLaunchArgument(
             'web_map_interval',
@@ -238,5 +300,6 @@ def generate_launch_description():
         SetEnvironmentVariable('ROS_DOMAIN_ID', LaunchConfiguration('ros_domain_id')),
         SetEnvironmentVariable('ROS_LOCALHOST_ONLY', LaunchConfiguration('ros_localhost_only')),
         OpaqueFunction(function=_broker_launch),
+        OpaqueFunction(function=_raw_preview_launch),
         OpaqueFunction(function=_web_mapping_launch),
     ])
