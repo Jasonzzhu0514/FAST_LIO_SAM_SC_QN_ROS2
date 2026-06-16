@@ -4,3 +4,4 @@
 [submodule "src/web_mapping"]
 	path = src/web_mapping
 	url = git@github.com:Jasonzzhu0514/web_mapping.git
+	branch = main

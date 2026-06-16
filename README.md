@@ -1,6 +1,6 @@
 # fast_lio_sam_sc_qn2 ROS 2 工作空间
 
-FAST-LIO-SAM-SC-QN 的 ROS 2 工作空间，主要用于 Livox MID360/MID360s。工作空间内包含 ROS 2 版 FAST-LIO 前端和 `fast_lio_sam_sc_qn2` 后端：前端输出里程计和配准点云，后端完成关键帧、回环检测、配准、GTSAM 位姿图优化、地图发布和结果保存。`src/web_mapping` 作为子模块提供浏览器可视化界面，`fast_lio_web_broker` 负责把本算法的话题、状态、地图路径和建图控制对齐到通用 `/web_mapping/*` 接口。
+本仓库基于 [engcang/FAST-LIO-SAM-SC-QN](https://github.com/engcang/FAST-LIO-SAM-SC-QN) 改造，面向 ROS 2、Livox MID360/MID360s 和 Web Mapping 集成做了适配。工作空间内包含 ROS 2 版 FAST-LIO 前端和 `fast_lio_sam_sc_qn2` 后端：前端输出里程计和配准点云，后端完成关键帧、回环检测、配准、GTSAM 位姿图优化、地图发布和结果保存。`src/web_mapping` 作为子模块提供浏览器可视化界面，`fast_lio_web_broker` 负责把本算法的话题、状态、地图路径和建图控制对齐到通用 `/web_mapping/*` 接口。
 
 默认输入配置位于 `src/fast_lio_sam_sc_qn2/config/mid360.yaml`：
 
@@ -190,6 +190,14 @@ ros2 topic list | grep web_mapping
 ## Web Mapping
 
 `src/web_mapping` 是独立 Web Mapping 子模块。`fast_lio_web_broker` 是本项目的适配层，负责把 FAST-LIO-SAM-SC-QN 的话题、状态、控制命令和地图保存路径对齐到通用 `/web_mapping/*` 接口。
+
+当前 FAST-LIO-SAM-SC-QN 集成固定验证的 Web Mapping 子模块提交是：
+
+```text
+src/web_mapping @ 715a26f1d63141f7baf0e53d061d471da748872f
+```
+
+不要在没有重新验证本集成的情况下更新 `src/web_mapping` 子模块指针。后续如果要接入其他 SLAM 算法，优先新增对应 broker/launch 适配到 `/web_mapping/*` 协议；需要修改 Web 前端时，建议在 `web_mapping` 仓库另开分支或新提交给新算法使用，保留本仓库记录的兼容提交。
 
 如果建图已经由 `mid360_mapping.launch.py` 启动，默认会同时启动 broker。另开终端启动 Web UI：
 
